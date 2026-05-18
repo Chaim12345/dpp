@@ -1,0 +1,814 @@
+# VectorJSON
+
+[![CI](https://github.com/teamchong/vectorjson/actions/workflows/ci.yml/badge.svg)](https://github.com/teamchong/vectorjson/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/vectorjson)](https://www.npmjs.com/package/vectorjson)
+[![gzip size](https://img.shields.io/badge/gzip-~47kB-blue)](https://www.npmjs.com/package/vectorjson)
+[![license](https://img.shields.io/npm/l/vectorjson)](https://github.com/teamchong/vectorjson/blob/main/LICENSE)
+
+O(n) streaming JSON parser for LLM tool calls, built on WASM SIMD. Agents act faster with field-level streaming, detect wrong outputs early to abort and save tokens.
+
+## The Problem
+
+When an LLM writes code via a tool call, it streams JSON like this:
+
+```json
+{"tool":"file_edit","path":"app.ts","code":"function hello() {\n  ...5KB of code...\n}","explanation":"I refactored the..."}
+```
+
+Your agent UI needs to:
+1. **Show the tool name immediately** — so the user sees "Editing app.ts" before the code arrives
+2. **Stream code to the editor character-by-character** — not wait for the full response
+3. **Skip the explanation** — the user doesn't need it rendered in real-time
+
+Current AI SDKs — Vercel, Anthropic, TanStack, OpenClaw — re-parse the *entire accumulated buffer* on every token:
+
+```js
+// What every AI SDK actually does internally
+for await (const chunk of stream) {
+  buffer += chunk;
+  result = parsePartialJson(buffer); // re-parses ENTIRE buffer every chunk
+}
+```
+
+A 50KB tool call streamed in ~12-char chunks means ~4,000 full re-parses — O(n²). At 100KB, Vercel AI SDK spends 6.1 seconds just parsing. Anthropic SDK spends 13.4 seconds. Each re-parse also allocates a new string (`buffer += chunk`) and a new object graph — all immediately discarded. That's ~100 MB of throwaway strings for a 50KB payload, plus thousands of intermediate objects, putting heavy pressure on the garbage collector and bloating memory.
+
+## Quick Start
+
+Zero-config — just import and use. No `init()`, no WASM setup:
+
+```js
+import { parse, createParser, createEventParser } from "vectorjson";
+
+// One-shot parse
+const result = parse('{"tool":"file_edit","path":"app.ts"}');
+result.value.tool;  // "file_edit" — lazy Proxy over WASM tape
+```
+
+**Streaming** — O(n) incremental parsing, feed chunks, get a live object:
+
+```js
+import { createParser } from "vectorjson";
+
+const parser = createParser();
+for await (const chunk of stream) {
+  parser.feed(chunk);
+  result = parser.getValue();        // O(1) — returns live object
+}
+parser.destroy();
+```
+
+`getValue()` returns a **live JS object** that grows incrementally on each `feed()`. No re-parsing — each byte is scanned exactly once.
+
+**Schema-driven streaming** — pass a schema, get only what it defines. An LLM streams a 50KB tool call with `name`, `age`, `bio`, `metadata` — but your schema only needs `name` and `age`. Everything else is skipped at the byte level, never allocated in JS:
+
+```js
+import { z } from "zod";
+import { createParser } from "vectorjson";
+
+const User = z.object({ name: z.string(), age: z.number() });
+
+for await (const partial of createParser({ schema: User, source: response.body })) {
+  console.log(partial);
+  // { name: "Ali" }              ← partial, render immediately
+  // { name: "Alice" }
+  // { name: "Alice", age: 30 }   ← validated on complete
+}
+```
+
+The schema defines what to parse. Fields outside the schema are ignored during scanning — no objects created, no strings decoded, no memory wasted.
+
+**Or skip intermediate access entirely** — if you only need the final value:
+
+```js
+const parser = createParser();
+for await (const chunk of stream) {
+  const s = parser.feed(chunk);      // O(1) — appends bytes to WASM buffer
+  if (s === "complete") break;
+}
+const result = parser.getValue();    // one SIMD parse at the end
+parser.destroy();
+```
+
+**Event-driven** — react to fields as they arrive, O(n) total, no re-parsing:
+
+```js
+import { createEventParser } from "vectorjson";
+
+const parser = createEventParser();
+
+parser.on('tool', (e) => showToolUI(e.value));             // fires immediately
+parser.onDelta('code', (e) => editor.append(e.value));     // streams char-by-char
+
+for await (const chunk of llmStream) {
+  parser.feed(chunk);  // O(n) — only new bytes scanned
+}
+parser.destroy();
+```
+
+**Early abort** — detect wrong output at chunk 7, cancel the remaining 8,000+ chunks:
+
+```js
+const abort = new AbortController();
+const parser = createEventParser();
+
+parser.on('name', (e) => {
+  if (e.value !== 'str_replace_editor') {
+    parser.destroy();
+    abort.abort();  // stop the LLM stream, stop paying for tokens
+  }
+});
+
+for await (const chunk of llmStream({ signal: abort.signal })) {
+  const status = parser.feed(chunk);
+  if (status === 'error') break;  // malformed JSON — bail out
+}
+```
+
+**Worker offload** — `getTapeBuffer()` + `importTape()` for lazy access without re-parsing:
+
+```js
+// In Worker:
+parser.feed(chunk);
+const tape = parser.getTapeBuffer();
+postMessage(tape, [tape]); // O(1) transfer — moves pointer, no copy
+
+// On Main thread:
+import { importTape } from "vectorjson";
+const obj = importTape(tape); // imports pre-built tape, no parse
+obj.name; // lazy Proxy — only materializes fields you access
+```
+
+**Note:** For full materialization, `JSON.parse` in Worker + structured clone is faster end-to-end — Chrome's C++ structured clone is highly optimized. Tape transfer wins when you only need a few fields on the main thread via lazy Proxy access, avoiding full object materialization.
+
+## Benchmarks
+
+Apple-to-apple: both sides produce a materialized partial object on every chunk. Same payload, same chunks (~12 chars, typical LLM token).
+
+`bun --expose-gc bench/ai-parsers/bench.mjs`
+
+| Payload | Product | Original | + VectorJSON | Speedup |
+|---------|---------|----------|-------------|---------|
+| 1 KB | Vercel AI SDK | 3.9 ms | 283 µs | **14×** |
+| | Anthropic SDK | 3.3 ms | 283 µs | **12×** |
+| | TanStack AI | 3.2 ms | 283 µs | **11×** |
+| | OpenClaw | 3.8 ms | 283 µs | **14×** |
+| 5 KB | Vercel AI SDK | 23.1 ms | 739 µs | **31×** |
+| | Anthropic SDK | 34.7 ms | 739 µs | **47×** |
+| | TanStack AI | — | 739 µs | — |
+| | OpenClaw | — | 739 µs | — |
+| 50 KB | Vercel AI SDK | 1.80 s | 2.7 ms | **664×** |
+| | Anthropic SDK | 3.39 s | 2.7 ms | **1255×** |
+| | TanStack AI | 2.34 s | 2.7 ms | **864×** |
+| | OpenClaw | 2.73 s | 2.7 ms | **1011×** |
+| 100 KB | Vercel AI SDK | 6.1 s | 6.6 ms | **920×** |
+| | Anthropic SDK | 13.4 s | 6.6 ms | **2028×** |
+| | TanStack AI | 7.0 s | 6.6 ms | **1065×** |
+| | OpenClaw | 8.0 s | 6.6 ms | **1222×** |
+
+Stock parsers re-parse the full buffer on every chunk — O(n²). VectorJSON maintains a **live JS object** that grows incrementally on each `feed()`, so `getValue()` is O(1). Total work: O(n).
+
+### What about single-shot JSON.parse?
+
+For one-shot full materialization, `JSON.parse` is faster — it's highly optimized C++ running inside V8. On small payloads it's orders of magnitude faster. On large payloads (500KB+) VectorJSON approaches parity but never beats it for full access:
+
+```
+bun --expose-gc bench/parse-stream.mjs   (one-shot section, CI results)
+
+  1 KB     JSON.parse 2.16M ops/s    VectorJSON 1.37K ops/s    JSON.parse wins
+  10 KB    JSON.parse 9.64K ops/s    VectorJSON 1.37K ops/s    JSON.parse wins
+  500 KB   JSON.parse  490  ops/s    VectorJSON  466  ops/s    ~equal (0.95×)
+  2 MB     JSON.parse  183  ops/s    VectorJSON  172  ops/s    ~equal (0.94×)
+```
+
+VectorJSON is not a replacement for `JSON.parse`. It wins in different scenarios:
+- **Streaming**: O(n) incremental vs O(n²) re-parse on every chunk
+- **Partial access**: read 3 fields from a 100KB payload without materializing the other 97%
+- **Deep compare**: WASM tape-level comparison with zero JS allocations
+
+### Why this matters: main thread availability
+
+The real cost isn't just CPU time — it's blocking the agent's main thread. Simulating an Anthropic `tool_use` content block (`str_replace_editor`) streamed in ~12-char chunks:
+
+`bun --expose-gc bench/time-to-first-action.mjs`
+
+| Payload | Stock total | VectorJSON total | Main thread freed |
+|---------|-----------|-----------------|-------------------|
+| 1 KB | 4.0 ms | 1.7 ms | 2.3 ms sooner |
+| 10 KB | 36.7 ms | 1.9 ms | 35 ms sooner |
+| 50 KB | 665 ms | 3.8 ms | **661 ms sooner** |
+| 100 KB | 2.42 s | 10.2 ms | **2.4 seconds sooner** |
+
+Both approaches detect the tool name (`.name`) at the same chunk — the LLM hasn't streamed more yet. But while VectorJSON finishes processing all chunks in milliseconds, the stock parser blocks the main thread for the entire duration. The agent can't render UI, stream code to the editor, or start running tools until parsing is done.
+
+For even more control, use `createEventParser()` for field-level subscriptions or only call `getValue()` once when `feed()` returns `"complete"`.
+
+### Worker Transfer
+
+`bun run bench:worker` (requires Playwright + Chromium)
+
+Measures full round-trip time (postMessage → worker parse → transfer → main receive + field access) in a real browser. For full materialization, `JSON.parse` + structured clone wins — Chrome's C++ clone is faster than WASM parse + tape export/import. Tape transfer is useful when you only access a few fields via lazy Proxy on the main thread.
+
+<details>
+<summary>Which products use which parser</summary>
+
+| Product | Stock Parser | With VectorJSON |
+|---------|-------------|----------------|
+| Vercel AI SDK | `fixJson` + `JSON.parse` — O(n²) | `createParser().feed()` + `getValue()` |
+| OpenCode | Vercel AI SDK (`streamText()`) — O(n²) | `createParser().feed()` + `getValue()` |
+| TanStack AI | `partial-json` npm — O(n²) | `createParser().feed()` + `getValue()` |
+| OpenClaw | `partial-json` npm — O(n²) | `createParser().feed()` + `getValue()` |
+| Anthropic SDK | vendored `partial-json-parser` — O(n²) | `createParser().feed()` + `getValue()` |
+
+</details>
+
+## How It Works
+
+VectorJSON compiles [simdjson](https://simdjson.org/) (a SIMD-accelerated JSON parser written in C++) to WebAssembly via Zig. The WASM module does the byte-level parsing — finding structural characters, validating UTF-8, building a tape of tokens — while a thin JS layer provides the streaming API, lazy Proxy materialization, and event dispatch.
+
+The streaming parser (`createParser`) accumulates chunks in a WASM-side buffer and re-runs the SIMD parse on the full buffer each `feed()`. This sounds similar to re-parsing, but the difference is: the parse itself runs at SIMD speed inside WASM (~1 GB/s), while JS-based parsers run at ~50 MB/s. The JS object returned by `getValue()` is a live Proxy that reads directly from the WASM tape — no intermediate object allocation.
+
+The event parser (`createEventParser`) adds path-matching on top: it diffs the tape between feeds to detect new/changed values and fires callbacks only for subscribed paths.
+
+## Install
+
+```bash
+npm install vectorjson
+# or
+pnpm add vectorjson
+# or
+bun add vectorjson
+# or
+yarn add vectorjson
+```
+
+## Usage
+
+### Streaming parse
+
+Feed chunks as they arrive from any source — raw fetch, WebSocket, SSE, or your own transport:
+
+```js
+import { createParser } from "vectorjson";
+
+const parser = createParser();
+for await (const chunk of stream) {
+  const s = parser.feed(chunk);
+  if (s === "complete" || s === "end_early") break;
+}
+const result = parser.getValue(); // lazy Proxy — materializes on access
+parser.destroy();
+```
+
+### Event-driven: React to fields as they stream in
+
+When an LLM streams a tool call, you usually care about specific fields at specific times. `createEventParser` lets you subscribe to paths and get notified the moment a value completes or a string grows:
+
+```js
+import { createEventParser } from "vectorjson";
+
+const parser = createEventParser();
+
+// Get the tool name the moment it's complete
+parser.on('tool_calls[*].name', (e) => {
+  console.log(e.value);   // "search"
+  console.log(e.index);   // 0 (which tool call)
+});
+
+// Stream code to the editor as it arrives
+parser.onDelta('tool_calls[0].args.code', (e) => {
+  editor.append(e.value); // just the new characters, decoded
+});
+
+for await (const chunk of llmStream) {
+  parser.feed(chunk);
+}
+parser.destroy();
+```
+
+### Mixed LLM output (chain-of-thought, code fences)
+
+Some models emit thinking text before JSON, or wrap JSON in code fences. VectorJSON finds the JSON automatically:
+
+```js
+import { createEventParser } from "vectorjson";
+
+const parser = createEventParser();
+parser.on('answer', (e) => console.log(e.value));
+parser.onText((text) => thinkingPanel.append(text)); // opt-in
+
+// All of these work:
+// <think>reasoning</think>{"answer": 42}
+// ```json\n{"answer": 42}\n```
+// Here's the result:\n{"answer": 42}
+parser.feed(llmOutput);
+```
+
+### Schema-driven streaming — parse only what the schema defines
+
+Pass a schema and VectorJSON extracts only the fields it defines. Everything else is skipped at the byte level — no objects created, no strings decoded. Arrays are transparent: `{ users: z.array(z.object({ name })) }` picks through arrays automatically.
+
+```js
+import { z } from "zod";
+import { createParser } from "vectorjson";
+
+const User = z.object({ name: z.string(), age: z.number() });
+
+for await (const partial of createParser({ schema: User, source: response.body })) {
+  console.log(partial);
+  // { name: "Ali" }              ← partial, render immediately
+  // { name: "Alice", age: 30 }   ← validated on complete
+}
+```
+
+Both `createParser` and `createEventParser` support `source` + `for await`:
+
+```js
+import { createEventParser } from "vectorjson";
+
+const parser = createEventParser({ source: response.body });
+parser.on('tool', (e) => showToolUI(e.value));
+
+for await (const partial of parser) {
+  updateUI(partial); // growing partial value
+}
+```
+
+Works with any async source — fetch body, WebSocket wrapper, SSE adapter, or a plain async generator:
+
+```js
+async function* chunks() {
+  yield '{"status":"';
+  yield 'ok","data":';
+  yield '[1,2,3]}';
+}
+
+for await (const partial of createParser({ source: chunks() })) {
+  console.log(partial);
+}
+```
+
+### Schema validation
+
+Validate and auto-infer types with Zod, Valibot, ArkType, or any lib with `.safeParse()`. Works on all three APIs:
+
+**Streaming parser with typed partial objects:**
+
+```ts
+import { z } from 'zod';
+import { createParser } from "vectorjson";
+
+const User = z.object({ name: z.string(), age: z.number() });
+
+const parser = createParser(User);           // T inferred from schema
+for await (const chunk of stream) {
+  parser.feed(chunk);
+  const partial = parser.getValue();         // { name: "Ali" } mid-stream — always available
+  const done = parser.getStatus() === "complete";
+  updateUI(partial, done);                   // render as fields arrive
+}
+// On complete: getValue() runs safeParse → returns validated data or undefined
+parser.destroy();
+```
+
+**Partial JSON** — returns `DeepPartial<T>` because incomplete JSON has missing fields:
+
+```ts
+import { parsePartialJson } from "vectorjson";
+
+const { value, state } = parsePartialJson('{"name":"Al', User);
+// value: { name: "Al" }     — partial object, typed as DeepPartial<{ name: string; age: number }>
+// state: "repaired-parse"
+// TypeScript type: { name?: string; age?: number } | undefined
+```
+
+**Event parser** — filter events by schema:
+
+```js
+const ToolCall = z.object({ name: z.string(), args: z.record(z.unknown()) });
+
+parser.on('tool_calls[*]', ToolCall, (event) => {
+  event.value.name; // typed as string
+  // Only fires when value passes schema validation
+});
+```
+
+Schema-agnostic: any object with `{ safeParse(v) → { success: boolean; data?: T } }` works.
+
+### Deep compare — compare JSON without materializing
+
+Compare two parsed values directly in WASM memory. Returns a boolean — no JS objects allocated, no Proxy traps fired. Useful for diffing LLM outputs, caching, or deduplication:
+
+```js
+import { parse, deepCompare } from "vectorjson";
+
+const a = parse('{"name":"Alice","age":30}').value;
+const b = parse('{"age":30,"name":"Alice"}').value;
+
+deepCompare(a, b);                          // true — key order ignored by default
+deepCompare(a, b, { ignoreKeyOrder: false }); // false — keys must be in same order
+```
+
+By default, `deepCompare` ignores key order — `{"a":1,"b":2}` equals `{"b":2,"a":1}`, just like `fast-deep-equal`. Set `{ ignoreKeyOrder: false }` for strict key order comparison, which is ~2× faster when you know both values come from the same source.
+
+```
+bun --expose-gc bench/deep-compare.mjs
+
+  Equal objects (560 KB):
+  JS deepEqual (recursive)         848 ops/s    heap Δ  2.4 MB
+  VJ ignore key order (default)  1.63K ops/s    heap Δ  0.1 MB    2× faster
+  VJ strict key order            3.41K ops/s    heap Δ  0.1 MB    4× faster
+```
+
+Works with any combination: two VJ proxies (fast WASM path), plain JS objects, or mixed (falls back to `JSON.stringify` comparison).
+
+### Lazy access — only materialize what you touch
+
+`parse()` returns a lazy Proxy backed by the WASM tape. Fields are only materialized into JS objects when you access them. On a 2 MB payload, reading one field is 2× faster than `JSON.parse` because the other 99% is never allocated:
+
+```js
+import { parse } from "vectorjson";
+
+const result = parse(huge2MBToolCall);
+result.value.tool;   // "file_edit" — reads from WASM tape, 2.3ms
+result.value.path;   // "app.ts"
+// result.value.code (the 50KB field) is never materialized in JS memory
+```
+
+```
+bun --expose-gc bench/partial-access.mjs
+
+  2.2 MB payload, 10K items:
+  Access 1 field    JSON.parse 4.6ms    VectorJSON 2.3ms    2× faster
+  Access 10 items   JSON.parse 4.5ms    VectorJSON 2.6ms    1.7× faster
+  Full access       JSON.parse 4.8ms    VectorJSON 4.6ms    ~equal
+```
+
+### One-shot parse
+
+For non-streaming use cases:
+
+```js
+import { parse } from "vectorjson";
+
+const result = parse('{"users": [{"name": "Alice"}]}');
+result.status;       // "complete" | "complete_early" | "incomplete" | "invalid"
+result.value.users;  // lazy Proxy — materializes on access
+```
+
+### JSONL & JSON5
+
+Both `createParser` and `createEventParser` accept `format: "jsonl" | "json5"`:
+
+```js
+// JSONL — yields each value separately
+for await (const value of createParser({ format: "jsonl", source: stream })) {
+  console.log(value);  // { user: "Alice" }, { user: "Bob" }, ...
+}
+
+// JSON5 — comments, trailing commas, unquoted keys, single-quoted strings, hex, Infinity/NaN
+const p = createParser({ format: "json5" });
+p.feed(`{ name: 'Alice', tags: ['admin',], color: 0xFF0000, timeout: Infinity, }`);
+p.getValue(); // { name: "Alice", tags: ["admin"], color: 16711680, timeout: Infinity }
+```
+
+JSONL push-based: call `resetForNext()` after each value. JSON5 comments are stripped at the byte level during streaming.
+
+## API Reference
+
+### Direct exports (recommended)
+
+All functions are available as direct imports — no `init()` needed:
+
+```js
+import { parse, parsePartialJson, deepCompare, createParser, createEventParser, materialize, importTape } from "vectorjson";
+```
+
+### `init(options?): Promise<VectorJSON>`
+
+Returns cached singleton. Useful for passing custom WASM via `{ engineWasm?: string | URL | BufferSource }`. Called automatically on import.
+
+### `parse(input: string | Uint8Array): ParseResult`
+
+```ts
+interface ParseResult {
+  status: "complete" | "complete_early" | "incomplete" | "invalid";
+  value?: unknown;           // lazy Proxy for objects/arrays, plain value for primitives
+  remaining?: Uint8Array;    // unparsed bytes after complete_early (for NDJSON)
+  error?: string;
+  isComplete(val: unknown): boolean;  // was this value in the original input or autocompleted?
+  toJSON(): unknown;                   // full materialization via JSON.parse (cached)
+}
+```
+
+- **`complete`** — valid JSON
+- **`complete_early`** — valid JSON with trailing data (NDJSON); use `remaining` for the rest
+- **`incomplete`** — truncated JSON; value is autocompleted, `isComplete()` tells you what's real
+- **`invalid`** — broken JSON
+
+### `createParser(schema?): StreamingParser<T>`
+### `createParser(options?): StreamingParser<T>`
+
+Each `feed()` processes only new bytes — O(n) total. Three overloads:
+
+```ts
+createParser();                    // no validation
+createParser(schema);              // only parse schema fields, validate on complete
+createParser({ schema, source });  // options object
+```
+
+**Options object:**
+
+```ts
+interface CreateParserOptions<T = unknown> {
+  schema?: ZodLike<T>;   // only parse schema fields, validate on complete
+  source?: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array | string>;
+  format?: "json" | "jsonl" | "json5";  // default: "json"
+}
+```
+
+When a `schema` is provided:
+- Only fields defined in the schema are parsed — everything else is skipped at the byte level
+- Arrays are transparent — `z.array(z.object({ name }))` parses `name` inside each array element
+- On complete, `safeParse()` validates the final value
+
+When `source` is provided, the parser becomes async-iterable — use `for await` to consume partial values:
+
+```ts
+for await (const partial of createParser({ schema: User, source: stream })) {
+  console.log(partial); // growing object with only schema fields
+}
+```
+
+```ts
+interface StreamingParser<T = unknown> {
+  feed(chunk: Uint8Array | string): FeedStatus;
+  getValue(): T | undefined;  // autocompleted partial while incomplete, final when complete
+  getRemaining(): Uint8Array | null;
+  getRawBuffer(): ArrayBuffer | null;  // transferable buffer for Worker postMessage
+  getTapeBuffer(): ArrayBuffer | null; // packed tape + input for zero-parse transfer
+  getStatus(): FeedStatus;
+  resetForNext(): number;  // JSONL: reset for next value, returns remaining byte count
+  destroy(): void;
+  [Symbol.asyncIterator](): AsyncIterableIterator<T | undefined>;  // requires source
+}
+type FeedStatus = "incomplete" | "complete" | "error" | "end_early";
+```
+
+While incomplete, `getValue()` returns the **live document** — a mutable JS object that grows incrementally on each `feed()`. This is O(1) per call (just returns the reference). With a schema, returns `undefined` when validation fails:
+
+```ts
+import { z } from 'zod';
+import { createParser } from "vectorjson";
+
+const User = z.object({ name: z.string(), age: z.number() });
+
+const parser = createParser(User);
+parser.feed('{"name":"Alice","age":30}');
+const val = parser.getValue(); // { name: string; age: number } | undefined ✅
+```
+
+Works with Zod, Valibot, ArkType — any library with `{ safeParse(v) → { success, data? } }`.
+
+### `parsePartialJson(input, schema?): PartialJsonResult<DeepPartial<T>>`
+
+One-shot partial JSON parse. Returns a plain JS object (not a Proxy). Pass an optional schema for type-safe validation.
+
+With a schema, returns `DeepPartial<T>` — all properties are optional because incomplete JSON will have missing fields. When `safeParse` succeeds, returns validated `data`. When `safeParse` fails on a repaired-parse (partial JSON), the raw parsed value is kept — the object is partial, that's expected.
+
+```ts
+interface PartialJsonResult<T = unknown> {
+  value: T | undefined;
+  state: "successful-parse" | "repaired-parse" | "failed-parse";
+}
+
+type DeepPartial<T> = T extends object
+  ? T extends Array<infer U> ? Array<DeepPartial<U>>
+  : { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+```
+
+### `createEventParser(options?): EventParser`
+
+Event-driven streaming parser. Events fire synchronously during `feed()`.
+
+```ts
+createEventParser();                              // basic
+createEventParser({ source: stream });            // for-await iteration
+createEventParser({ schema, source });              // schema + for-await
+```
+
+**Options:**
+
+```ts
+{
+  source?: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array | string>;
+  schema?: ZodLike<T>;   // only parse schema fields (same as createParser)
+  format?: "json" | "jsonl" | "json5";  // default: "json"
+}
+```
+
+When `source` is provided, the parser becomes async-iterable — `for await` yields growing partial values, just like `createParser`:
+
+```ts
+const parser = createEventParser({ source: stream });
+parser.on('tool', (e) => showToolUI(e.value));
+
+for await (const partial of parser) {
+  updateUI(partial);
+}
+```
+
+```ts
+interface EventParser {
+  on(path: string, callback: (event: PathEvent) => void): EventParser;
+  on<T>(path: string, schema: { safeParse: Function }, callback: (event: PathEvent & { value: T }) => void): EventParser;
+  onDelta(path: string, callback: (event: DeltaEvent) => void): EventParser;
+  onText(callback: (text: string) => void): EventParser;
+  off(path: string, callback?: Function): EventParser;
+  feed(chunk: string | Uint8Array): FeedStatus;
+  getValue(): unknown | undefined;  // undefined while incomplete, throws on parse errors
+  getRemaining(): Uint8Array | null;
+  getRawBuffer(): ArrayBuffer | null;  // transferable buffer for Worker postMessage
+  getTapeBuffer(): ArrayBuffer | null; // packed tape + input for zero-parse transfer
+  getStatus(): FeedStatus;
+  destroy(): void;
+  [Symbol.asyncIterator](): AsyncIterableIterator<unknown | undefined>;  // requires source
+}
+```
+
+All methods return `self` for chaining: `parser.on(...).onDelta(...)`.
+
+**Path syntax:**
+- `foo.bar` — exact key
+- `foo[0]` — array index
+- `foo[*]` — any array index (wildcard)
+- `foo.*.bar` — wildcard single segment (any key or index)
+
+**Event types:**
+
+```ts
+interface PathEvent {
+  type: 'value';
+  path: string;           // resolved path: "items.2.name" (concrete indices)
+  value: unknown;         // parsed JS value
+  offset: number;         // byte offset in accumulated buffer
+  length: number;         // byte length of raw value
+  index?: number;         // last wildcard-matched array index
+  key?: string;           // last wildcard-matched object key
+  matches: (string | number)[];  // all wildcard-matched segments
+}
+
+interface DeltaEvent {
+  type: 'delta';
+  path: string;           // resolved path
+  value: string;          // decoded characters (escapes like \n are resolved)
+  offset: number;         // byte offset of delta in buffer (raw bytes)
+  length: number;         // byte length of delta (raw bytes, not char count)
+}
+
+```
+
+### Parser comparison
+
+| | `createParser` | `createEventParser` |
+|---|---|---|
+| **Completion** | `feed()` returns `"complete"` after one JSON value | Handles multiple JSON values — user calls `destroy()` when done |
+| **Malformed JSON** | `feed()` returns `"error"` | Skips it, finds the next JSON |
+| **Schema** | Pass Zod/Valibot, only schema fields are parsed | Same |
+| **Skip non-JSON** (think tags, code fences, prose) | — | Always |
+| **Field subscriptions** | — | `on()`, `onDelta()` |
+| **JSONL** | `format: "jsonl"` | `format: "jsonl"` |
+| **Text callbacks** | — | `onText()` |
+
+**`createParser` parses one JSON value** and reports status — you check it and react:
+
+```js
+const parser = createParser();
+for await (const chunk of stream) {
+  const status = parser.feed(chunk);
+  if (status === "complete") break;  // done — one JSON value parsed
+  if (status === "error") break;     // malformed JSON detected
+}
+const result = parser.getValue();
+parser.destroy();
+```
+
+**`createEventParser` handles an entire LLM response** — text, thinking, code fences, all in one stream:
+
+```js
+const parser = createEventParser();
+parser.on('tool', (e) => showToolUI(e.value));
+parser.onText((text) => thinkingPanel.append(text));
+
+// LLM output with mixed content:
+// <think>let me reason about this...</think>
+// {"tool":"search","query":"weather"}
+for await (const chunk of llmStream) {
+  parser.feed(chunk);  // strips think tags, finds JSON, fires callbacks
+}
+parser.destroy();
+```
+
+### `deepCompare(a, b, options?): boolean`
+
+Compare two values for deep equality without materializing JS objects. When both values are VJ proxies, comparison runs entirely in WASM memory — zero allocations, zero Proxy traps.
+
+```ts
+deepCompare(
+  a: unknown,
+  b: unknown,
+  options?: { ignoreKeyOrder?: boolean }  // default: true
+): boolean
+```
+
+- **`ignoreKeyOrder: true`** (default) — `{"a":1,"b":2}` equals `{"b":2,"a":1}`. Same semantics as `fast-deep-equal`.
+- **`ignoreKeyOrder: false`** — keys must appear in the same order. ~2× faster for same-source comparisons.
+- Falls back to `JSON.stringify` comparison when either value is a plain JS object.
+
+### `materialize(value): unknown`
+
+Convert a lazy Proxy into a plain JS object tree. No-op on plain values.
+
+### `importTape(buf: ArrayBuffer): unknown`
+
+Import a packed tape buffer (from `getTapeBuffer()`) into a lazy Proxy. Skips parsing entirely — the pre-built tape is copied directly into a WASM document slot. Returns the same lazy Proxy as `parse()`.
+
+## Runtime Support
+
+| Runtime | Status | Notes |
+|---------|--------|-------|
+| Node.js 20+ | ✅ | WASM embedded in bundle — zero config |
+| Bun | ✅ | WASM embedded in bundle — zero config |
+| Browsers | ✅ | WASM embedded in bundle — zero config |
+| Deno | ✅ | WASM embedded in bundle — zero config |
+| Cloudflare Workers | ✅ | WASM embedded in bundle — zero config |
+
+WASM is embedded as base64 in the JS bundle and auto-initialized via top-level `await`. No setup required — just `import { parse } from "vectorjson"`.
+
+For advanced use cases, you can still provide a custom WASM binary via `init()`:
+
+```js
+import { init } from "vectorjson";
+const vj = await init({ engineWasm: customWasmBytes });
+```
+
+Bundle size: ~148 KB JS with embedded WASM (~47 KB gzipped). No runtime dependencies.
+
+## Runnable Examples
+
+The `examples/` directory has working demos you can run immediately:
+
+```bash
+# Anthropic tool call — streams fields as they arrive, early abort demo
+bun examples/anthropic-tool-call.ts --mock
+bun examples/anthropic-tool-call.ts --mock --wrong-tool   # early abort
+
+# OpenAI function call — streams function arguments via EventParser
+bun examples/openai-function-call.ts --mock
+
+# With a real API key:
+ANTHROPIC_API_KEY=sk-ant-... bun examples/anthropic-tool-call.ts
+OPENAI_API_KEY=sk-...       bun examples/openai-function-call.ts
+```
+
+See also `examples/ai-usage.ts` for additional patterns (MCP stdio, NDJSON embeddings).
+
+## Building from Source
+
+Requires: [Zig](https://ziglang.org/) 0.15+, [Bun](https://bun.sh/) or Node.js 20+, [Binaryen](https://github.com/WebAssembly/binaryen) (`wasm-opt`).
+
+```bash
+# macOS
+brew install binaryen
+
+# Ubuntu / Debian
+sudo apt-get install -y binaryen
+```
+
+```bash
+bun run build        # Zig → WASM → wasm-opt → TypeScript
+bun run test         # 724+ tests including 100MB stress payloads
+bun run test:worker  # Worker transferable tests (Playwright + Chromium)
+```
+
+To reproduce benchmarks:
+
+```bash
+bun --expose-gc bench/parse-stream.mjs           # one-shot + streaming parse
+cd bench/ai-parsers && bun install && bun --expose-gc bench.mjs  # AI SDK comparison
+bun run bench:worker                             # Worker transfer vs structured clone benchmark
+node --expose-gc bench/deep-compare.mjs          # deep compare: VJ vs JS deepEqual
+```
+
+Benchmark numbers in this README were measured on GitHub Actions (Ubuntu, x86_64). Results vary by machine but relative speedups are consistent.
+
+## Acknowledgments
+
+VectorJSON is built on the work of:
+
+- **[zimdjson](https://github.com/EzequielRamis/zimdjson)** by Ezequiel Ramis — a Zig port of simdjson that powers the WASM engine
+- **[simdjson](https://simdjson.org/)** by Daniel Lemire & Geoff Langdale — the SIMD-accelerated JSON parsing research that started it all
+
+## License
+
+Apache-2.0

@@ -1,0 +1,26 @@
+{
+  "name": "deepseek-pi-harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir ./dist",
+    "start": "bun run src/index.ts",
+    "agent": "bun run src/agent.ts",
+    "repl": "bun run src/agent-repl.ts",
+    "test-auth": "bun run src/web-api-client.ts",
+    "agent-native": "bun run src/agent-native.ts"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "latest",
+    "@mariozechner/pi-ai": "latest",
+    "@opentui/core": "^0.2.10",
+    "blessed": "",
+    "neo-blessed": "^0.2.0",
+    "sax-wasm": "^3.1.4",
+    "vectorjson": "^0.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest"
+  }
+}
