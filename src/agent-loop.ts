@@ -6,6 +6,8 @@ import {
   checkTurnLimit, estimateTokens, COMPACTION_THRESHOLD, MAX_TURNS,
 } from "./context.js";
 
+import { buildSystemPrompt } from "./system-prompt.js";
+
 export interface AgentLoopOptions {
   prompt: string;
   maxRounds?: number;
@@ -16,37 +18,7 @@ export interface AgentLoopOptions {
 }
 
 function sysPrompt(): string {
-  const cwd = process.cwd();
-  return `You are a coding assistant with access to local tools.
-
-**Current directory:** ${cwd}
-
-**Tools:**
-${getToolDescriptions()}
-
----
-
-**CRITICAL RULES:**
-1. NEVER simulate or fake tool results - always output JSON tool calls and wait for actual results
-2. NEVER use [Tool:name] format - only use JSON format shown below
-3. NEVER guess file contents - use read tool to check
-4. NEVER output code blocks as tool results - the system executes tools automatically
-
-**When to use tools:**
-- User asks about files/directories → use \`bash\` with \`ls\` or \`find\`
-- User asks to read a file → use \`read\` tool
-- User asks to write/change files → use \`write\` or \`edit\` tool
-- User asks to search code → use \`grep\` tool
-- User asks to run commands → use \`bash\` tool
-
-**ONLY use this JSON format for tool calls:**
-{"tool_calls":[{"name":"bash","arguments":{"command":"ls -la"}}]}
-{"tool_calls":[{"name":"read","arguments":{"path":"package.json"}}]}
-{"tool_calls":[{"name":"write","arguments":{"path":"test.txt","content":"hello"}}]}
-{"tool_calls":[{"name":"edit","arguments":{"path":"file.txt","old_string":"old","new_string":"new"}}]}
-{"tool_calls":[{"name":"grep","arguments":{"pattern":"search term","path":"."}}]}
-
-Tool results appear automatically after execution. Provide a brief summary after seeing results.`;
+  return buildSystemPrompt();
 }
 
 function buildPrompt(
@@ -114,15 +86,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
     const estimatedTokens = estimateTokens(promptText);
     if (estimatedTokens > MAX_CONTEXT_TOKENS * COMPACTION_THRESHOLD) {
       onErr(`[${round}] Compacting history (${estimatedTokens} tokens > threshold)`);
+      const compacted = compactHistory(messages, MAX_CONTEXT_TOKENS);
       messages.length = 0;
-      messages.push({ role: "user", content: options.prompt });
-      for (const msg of recentMessages.slice(-5)) {
-        if (msg.role === "tool") {
-          messages.push({ ...msg, content: truncateMessage(msg.content, 2000) });
-        } else {
-          messages.push(msg);
-        }
-      }
+      for (const msg of compacted) messages.push(msg);
+      onErr(`[${round}] Compacted to ${messages.length} messages`);
     }
 
     let fullText = "";

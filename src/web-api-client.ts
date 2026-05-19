@@ -1,6 +1,5 @@
 import { readFile, writeFile, mkdir, access } from "node:fs/promises";
 import path from "node:path";
-import { createParser } from "vectorjson";
 import { XmlToolCallParser } from "./xml-toolcall-parser.js";
 
 const DEEPSEEK_URL = "https://chat.deepseek.com";
@@ -838,45 +837,12 @@ export async function chatStreamParsed(
   if (!resp.body) throw new Error("No response body in chat stream");
 
   let responseMessageId: number | null = null;
-  const vjParser = createParser();
-  let vjFailed = false;
   const xmlParser = new XmlToolCallParser();
   let xmlFailed = false;
   xmlParser.init().catch(() => { xmlFailed = true; });
 
   for await (const event of parseSseStream(resp.body)) {
     if (event.type === "content") {
-      // Vectorjson: mid-stream JSON tool call detection
-      if (!vjFailed) {
-        const status = vjParser.feed(event.delta);
-        if (status === "complete" || status === "end_early") {
-          const value = vjParser.getValue() as any;
-          if (typeof value === "object" && value !== null) {
-            let toolCalls: Array<{ name: string; arguments: Record<string, unknown> }> | null = null;
-            // Format 1: {"tool_calls": [...]} or {"_calls": [...]}
-            const arr = value?.tool_calls ?? value?._calls;
-            if (Array.isArray(arr) && arr.length > 0) {
-              toolCalls = arr.map((c: any) => ({
-                name: String(c.name || c.function?.name || ""),
-                arguments: typeof c.arguments === "string" ? JSON.parse(c.arguments) : (c.arguments || {}),
-              }));
-            }
-            // Format 2: {"tool": "name", ...}
-            if (!toolCalls && typeof value?.tool === "string" && value.tool) {
-              const args = { ...value };
-              delete args.tool;
-              if (Object.keys(args).length > 0) {
-                toolCalls = [{ name: value.tool, arguments: args }];
-              }
-            }
-            if (toolCalls && onEvent) onEvent({ type: "tool_calls", calls: toolCalls });
-          }
-        } else if (status === "error") {
-          vjFailed = true;
-          vjParser.destroy();
-        }
-      }
-
       // Sax-wasm: mid-stream XML (DSML) tool call detection
       if (!xmlFailed && xmlParser.isReady) {
         xmlParser.feed(event.delta);
@@ -902,7 +868,6 @@ export async function chatStreamParsed(
     if (onEvent) onEvent(event);
   }
 
-  if (!vjFailed) vjParser.destroy();
   xmlParser.destroy();
 
   return responseMessageId;

@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepSeek Agent Console</title>
+<style>
+  * { box-sizing: border-box; }
+
+  :root {
+    --bg: #101114;
+    --panel: #17191d;
+    --panel-2: #202329;
+    --line: #333842;
+    --text: #ece7dd;
+    --muted: #9b958c;
+    --faint: #6f737d;
+    --accent: #d7ff64;
+    --blue: #6cb7ff;
+    --green: #7bd88f;
+    --red: #ff6b6b;
+    --amber: #ffbd5c;
+    --shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
+  }
+
+  html, body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100%;
+    overflow: hidden;
+    background:
+      linear-gradient(135deg, rgba(215, 255, 100, 0.06), transparent 32%),
+      radial-gradient(circle at 85% 20%, rgba(108, 183, 255, 0.13), transparent 28%),
+      var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+  }
+
+  button, select, textarea, input { font: inherit; }
+
+  .app {
+    height: 100dvh;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .rail {
+    border-right: 1px solid var(--line);
+    background: rgba(23, 25, 29, 0.92);
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .brand {
+    display: grid;
+    gap: 6px;
+  }
+
+  .brand h1 {
+    margin: 0;
+    font-size: 18px;
+    letter-spacing: 0;
+  }
+
+  .brand span {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .field {
+    display: grid;
+    gap: 7px;
+  }
+
+  .field label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+
+  select, .toggle, .ghost {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--text);
+    min-height: 38px;
+  }
+
+  select { padding: 0 12px; }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    cursor: pointer;
+  }
+
+  .toggle input { accent-color: var(--accent); }
+
+  .ghost {
+    cursor: pointer;
+    color: var(--muted);
+  }
+
+  .ghost:hover { color: var(--text); border-color: var(--accent); }
+
+  .metrics {
+    margin-top: auto;
+    display: grid;
+    gap: 8px;
+  }
+
+  .metric {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 12px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+  }
+
+  .metric strong { color: var(--text); font-weight: 600; }
+
+  .workspace {
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+  }
+
+  .topbar {
+    min-height: 64px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(16, 17, 20, 0.72);
+    backdrop-filter: blur(18px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 24px;
+  }
+
+  .run-title {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .run-title strong { font-size: 14px; }
+  .run-title span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 0 11px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--panel);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .top-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .jump {
+    min-height: 32px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--muted);
+    padding: 0 12px;
+    cursor: pointer;
+    display: none;
+  }
+
+  .jump.visible { display: inline-flex; align-items: center; }
+  .jump:hover { color: var(--text); border-color: var(--accent); }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--green);
+    box-shadow: 0 0 16px rgba(123, 216, 143, 0.7);
+  }
+
+  .dot.disconnected { background: var(--red); box-shadow: 0 0 16px rgba(255, 107, 107, 0.7); }
+  .dot.reconnecting { background: var(--amber); box-shadow: 0 0 16px rgba(255, 189, 92, 0.7); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  #chat {
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  #chat::-webkit-scrollbar { width: 10px; }
+  #chat::-webkit-scrollbar-track { background: transparent; }
+  #chat::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .msg {
+    width: min(900px, 92%);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 13px 15px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: rgba(23, 25, 29, 0.86);
+    box-shadow: var(--shadow);
+    font-size: 13px;
+  }
+
+  .msg.user {
+    align-self: flex-end;
+    border-color: rgba(108, 183, 255, 0.45);
+    background: rgba(31, 45, 58, 0.9);
+  }
+
+  .msg.assistant {
+    align-self: flex-start;
+    border-color: rgba(215, 255, 100, 0.28);
+  }
+
+  .thinking {
+    width: min(900px, 92%);
+    align-self: flex-start;
+    border: 1px solid rgba(108, 183, 255, 0.28);
+    border-radius: 8px;
+    background: rgba(16, 23, 31, 0.86);
+    overflow: hidden;
+  }
+
+  .thinking summary {
+    cursor: pointer;
+    padding: 10px 13px;
+    color: var(--blue);
+    font-size: 12px;
+    user-select: none;
+  }
+
+  .thinking pre {
+    margin: 0;
+    max-height: 260px;
+    overflow: auto;
+    border-top: 1px solid var(--line);
+    padding: 12px;
+    white-space: pre-wrap;
+    color: #c9d9e8;
+    line-height: 1.5;
+  }
+
+  .msg.warning, .msg.error, .msg.info {
+    width: auto;
+    max-width: 840px;
+    align-self: center;
+    box-shadow: none;
+    font-size: 12px;
+  }
+
+  .msg.warning { color: var(--amber); border-color: rgba(255, 189, 92, 0.4); }
+  .msg.error { color: var(--red); border-color: rgba(255, 107, 107, 0.4); }
+  .msg.info { color: var(--blue); border-color: rgba(108, 183, 255, 0.35); }
+
+  .cursor::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 15px;
+    margin-left: 4px;
+    background: var(--accent);
+    vertical-align: -2px;
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .tool-call {
+    width: min(900px, 92%);
+    align-self: flex-start;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(23, 25, 29, 0.94);
+  }
+
+  .tool-call.detected { border-color: rgba(255, 189, 92, 0.42); }
+  .tool-call.running { border-color: rgba(108, 183, 255, 0.48); }
+  .tool-call.done { border-color: rgba(123, 216, 143, 0.38); }
+  .tool-call.failed { border-color: rgba(255, 107, 107, 0.45); }
+
+  .tool-header {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 11px 13px;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .tool-header:hover { background: rgba(255, 255, 255, 0.03); }
+  .tool-name { color: var(--accent); font-weight: 700; }
+  .tool-args { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-phase { color: var(--faint); font-size: 11px; text-transform: uppercase; }
+  .tool-body { display: none; border-top: 1px solid var(--line); padding: 12px; }
+  .tool-body.open { display: grid; gap: 10px; }
+  .tool-body pre {
+    margin: 0;
+    overflow: auto;
+    max-height: 320px;
+    border-radius: 7px;
+    background: #0b0c0f;
+    padding: 12px;
+    color: #d8d2c8;
+    white-space: pre-wrap;
+  }
+  .tool-status.ok { color: var(--green); }
+  .tool-status.err { color: var(--red); }
+
+  #reconnect-banner {
+    display: none;
+    margin: 0 24px 12px;
+    border: 1px solid rgba(255, 189, 92, 0.45);
+    border-radius: 8px;
+    background: rgba(255, 189, 92, 0.08);
+    color: var(--amber);
+    padding: 10px 12px;
+    font-size: 12px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  #reconnect-banner.visible { display: flex; }
+
+  #btn-reconnect {
+    border: 0;
+    border-radius: 7px;
+    background: var(--amber);
+    color: #16120a;
+    min-height: 30px;
+    padding: 0 12px;
+    cursor: pointer;
+  }
+
+  .composer {
+    border-top: 1px solid var(--line);
+    background: rgba(23, 25, 29, 0.95);
+    padding: 16px 24px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+  }
+
+  #input {
+    width: 100%;
+    min-height: 54px;
+    max-height: 180px;
+    resize: vertical;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #0b0c0f;
+    color: var(--text);
+    padding: 14px;
+    outline: none;
+    line-height: 1.45;
+  }
+
+  #input:focus { border-color: var(--accent); }
+
+  #btn-send {
+    min-width: 104px;
+    min-height: 54px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #15170c;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  #btn-send:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
+
+  @media (max-width: 780px) {
+    body { overflow: hidden; }
+    .app { height: 100dvh; grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .rail { border-right: 0; border-bottom: 1px solid var(--line); }
+    .workspace { min-height: 0; }
+    .topbar { padding: 12px 16px; align-items: flex-start; flex-direction: column; }
+    .top-actions { width: 100%; justify-content: space-between; }
+    #chat { padding: 16px; }
+    .msg, .tool-call, .thinking { width: 100%; }
+    .composer { padding: 12px 16px; grid-template-columns: 1fr; }
+    #btn-send { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <h1>DeepSeek Agent</h1>
+      <span>Persistent web console for long tool-using runs.</span>
+    </div>
+
+    <div class="field">
+      <label for="sel-model">Model</label>
+      <select id="sel-model">
+        <option value="expert" selected>Expert</option>
+        <option value="coder">Coder</option>
+        <option value="default">Default</option>
+      </select>
+    </div>
+
+    <label class="toggle" for="chk-thinking">
+      <span>Thinking stream</span>
+      <input type="checkbox" id="chk-thinking">
+    </label>
+
+    <button class="ghost" id="btn-clear">Clear conversation</button>
+
+    <div class="metrics">
+      <div class="metric"><span>Turns</span><strong id="hdr-turns">0</strong></div>
+      <div class="metric"><span>Messages</span><strong id="hdr-msgs">0</strong></div>
+      <div class="metric"><span>Model</span><strong id="hdr-model">expert</strong></div>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <div class="run-title">
+        <strong>Agent run</strong>
+        <span id="status-text">Ready</span>
+      </div>
+      <div class="top-actions">
+        <button class="jump" id="btn-bottom" type="button">Bottom</button>
+        <div class="pill"><span class="dot" id="conn-dot"></span><span id="conn-label">Connected</span></div>
+      </div>
+    </header>
+
+    <section id="chat" aria-live="polite"></section>
+
+    <div id="reconnect-banner">
+      <span id="reconnect-text">Connection lost. Reconnecting...</span>
+      <button id="btn-reconnect">Reconnect</button>
+    </div>
+
+    <form class="composer" id="composer">
+      <textarea id="input" placeholder="Send a task to the agent..." autocomplete="off"></textarea>
+      <button id="btn-send" type="submit">Send</button>
+    </form>
+  </main>
+</div>
+
+<script>
+const chat = document.getElementById("chat");
+const input = document.getElementById("input");
+const composer = document.getElementById("composer");
+const btnSend = document.getElementById("btn-send");
+const btnClear = document.getElementById("btn-clear");
+const selModel = document.getElementById("sel-model");
+const chkThinking = document.getElementById("chk-thinking");
+const statusText = document.getElementById("status-text");
+const connDot = document.getElementById("conn-dot");
+const connLabel = document.getElementById("conn-label");
+const btnBottom = document.getElementById("btn-bottom");
+const hdrModel = document.getElementById("hdr-model");
+const hdrTurns = document.getElementById("hdr-turns");
+const hdrMsgs = document.getElementById("hdr-msgs");
+const reconnectBanner = document.getElementById("reconnect-banner");
+const reconnectText = document.getElementById("reconnect-text");
+const btnReconnect = document.getElementById("btn-reconnect");
+
+let processing = false;
+let currentAssistantEl = null;
+let currentThinkingEl = null;
+let currentThinkingPre = null;
+let toolElements = new Map();
+let toolElementsByKey = new Map();
+let toolCallCounter = 0;
+let connectionState = "connected";
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let healthCheckTimer = null;
+let lastPingTime = Date.now();
+let serverConfig = null;
+let pendingMessage = null;
+let autoStick = true;
+
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_BASE_DELAY = 1000;
+const RECONNECT_MAX_DELAY = 30000;
+
+function scrollToBottom() {
+  chat.scrollTop = chat.scrollHeight;
+  autoStick = true;
+  btnBottom.classList.remove("visible");
+}
+
+function shouldAutoScroll() {
+  return autoStick || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
+}
+
+function scrollToBottomIfPinned(wasPinned) {
+  if (wasPinned) scrollToBottom();
+}
+
+function updateScrollState() {
+  const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
+  autoStick = nearBottom;
+  btnBottom.classList.toggle("visible", !nearBottom);
+}
+
+function setConnectionState(state) {
+  connectionState = state;
+  connDot.className = `dot ${state === "connected" ? "" : state}`;
+  connLabel.textContent = state === "connected" ? "Connected" : state === "reconnecting" ? "Reconnecting" : "Disconnected";
+  reconnectBanner.classList.toggle("visible", state !== "connected");
+}
+
+function setStatus(message) {
+  statusText.textContent = message;
+}
+
+function setProcessing(next) {
+  processing = next;
+  btnSend.disabled = next;
+  btnSend.textContent = next ? "Running" : "Send";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function addMsg(role, text, cls = "") {
+  const wasPinned = shouldAutoScroll();
+  const div = document.createElement("div");
+  div.className = `msg ${role} ${cls}`.trim();
+  div.textContent = text;
+  chat.appendChild(div);
+  scrollToBottomIfPinned(wasPinned);
+  return div;
+}
+
+function removeIfEmpty(el) {
+  if (el && !el.textContent.trim()) el.remove();
+}
+
+function updateHeader(turns, messages) {
+  hdrTurns.textContent = String(turns);
+  hdrMsgs.textContent = String(messages);
+  hdrModel.textContent = selModel.value;
+}
+
+function createThinkingPanel() {
+  if (currentThinkingEl) return;
+  const wasPinned = shouldAutoScroll();
+  const details = document.createElement("details");
+  details.className = "thinking";
+  details.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = "Thinking";
+  const pre = document.createElement("pre");
+  details.append(summary, pre);
+  chat.appendChild(details);
+  currentThinkingEl = details;
+  currentThinkingPre = pre;
+  scrollToBottomIfPinned(wasPinned);
+}
+
+function appendThinking(delta) {
+  createThinkingPanel();
+  const wasPinned = shouldAutoScroll();
+  currentThinkingPre.textContent += delta;
+  scrollToBottomIfPinned(wasPinned);
+}
+
+function toolKey(name, args) {
+  return `${name}:${JSON.stringify(args).slice(0, 200)}`;
+}
+
+function createOrUpdateToolCall(name, args, toolCallId, phase = "detected", key = null) {
+  const normalizedKey = key || toolKey(name, args);
+  const existing = toolElements.get(toolCallId) || toolElementsByKey.get(normalizedKey);
+  if (existing) {
+    existing.dataset.toolCallId = toolCallId;
+    existing.dataset.toolKey = normalizedKey;
+    existing.className = `tool-call ${phase}`;
+    existing.querySelector(".tool-phase").textContent = phase;
+    toolElements.set(toolCallId, existing);
+    toolElementsByKey.set(normalizedKey, existing);
+    return existing;
+  }
+
+  const wasPinned = shouldAutoScroll();
+  const div = document.createElement("div");
+  div.className = `tool-call ${phase}`;
+  div.dataset.toolCallId = toolCallId;
+  div.dataset.toolKey = normalizedKey;
+
+  const argsStr = typeof args === "object" ? JSON.stringify(args, null, 2) : String(args);
+  const argsPreview = typeof args === "object" ? JSON.stringify(args).slice(0, 120) : String(args).slice(0, 120);
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "tool-header";
+  header.innerHTML = `<span class="tool-toggle">+</span><span class="tool-name">${escapeHtml(name)}</span><span class="tool-args">${escapeHtml(argsPreview)}</span><span class="tool-phase">${phase}</span>`;
+
+  const body = document.createElement("div");
+  body.className = "tool-body";
+  body.innerHTML = `<pre>${escapeHtml(argsStr)}</pre><div class="tool-result"></div><div class="tool-status"></div>`;
+
+  header.addEventListener("click", () => {
+    body.classList.toggle("open");
+    header.querySelector(".tool-toggle").textContent = body.classList.contains("open") ? "-" : "+";
+  });
+
+  div.append(header, body);
+  chat.appendChild(div);
+  toolElements.set(toolCallId, div);
+  toolElementsByKey.set(normalizedKey, div);
+  scrollToBottomIfPinned(wasPinned);
+  return div;
+}
+
+function updateToolResult(toolCallId, content, isError) {
+  const el = toolElements.get(toolCallId);
+  if (!el) return;
+  const wasPinned = shouldAutoScroll();
+  const body = el.querySelector(".tool-body");
+  const status = el.querySelector(".tool-status");
+  const result = el.querySelector(".tool-result");
+  const safeContent = content.length > 2400 ? `${content.slice(0, 2400)}\n... (${content.length} chars total)` : content;
+  el.className = `tool-call ${isError ? "failed" : "done"}`;
+  el.querySelector(".tool-phase").textContent = isError ? "failed" : "done";
+  status.className = `tool-status ${isError ? "err" : "ok"}`;
+  status.textContent = `${isError ? "Error" : "OK"} - ${content.length} chars`;
+  result.innerHTML = `<pre>${escapeHtml(safeContent)}</pre>`;
+  if (isError) body.classList.add("open");
+  scrollToBottomIfPinned(wasPinned);
+}
+
+async function fetchServerConfig() {
+  try {
+    const resp = await fetch("/api/connection-info");
+    if (resp.ok) serverConfig = await resp.json();
+  } catch {}
+}
+
+async function applySettings() {
+  hdrModel.textContent = selModel.value;
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelType: selModel.value, thinkingEnabled: chkThinking.checked }),
+    });
+  } catch (err) {
+    addMsg("warning", `Settings not applied: ${err.message}`);
+  }
+}
+
+async function healthCheck() {
+  try {
+    const resp = await fetch("/api/health");
+    if (!resp.ok) return false;
+    if (connectionState !== "connected") {
+      setConnectionState("connected");
+      setStatus("Reconnected");
+      reconnectAttempts = 0;
+      if (pendingMessage && !processing) {
+        const retry = pendingMessage;
+        pendingMessage = null;
+        addMsg("info", "Connection restored. Retrying the interrupted message.");
+        await sendMessageInternal(retry, { echoUser: false });
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startHealthCheck() {
+  if (healthCheckTimer) clearInterval(healthCheckTimer);
+  healthCheckTimer = setInterval(() => {
+    if (connectionState !== "connected") healthCheck();
+  }, 5000);
+}
+
+function scheduleReconnect() {
+  const maxAttempts = serverConfig?.maxReconnectAttempts || DEFAULT_MAX_RECONNECT_ATTEMPTS;
+  if (reconnectAttempts >= maxAttempts) {
+    setConnectionState("disconnected");
+    setStatus("Connection lost. Manual reconnect required.");
+    reconnectText.textContent = "Connection lost. Manual reconnect required.";
+    return;
+  }
+
+  reconnectAttempts += 1;
+  const delay = Math.min(RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts - 1), RECONNECT_MAX_DELAY);
+  const jitteredDelay = Math.round(delay * (0.5 + Math.random() * 0.5));
+  setConnectionState("reconnecting");
+  setStatus(`Reconnect attempt ${reconnectAttempts}/${maxAttempts}`);
+  reconnectText.textContent = `Connection lost. Retrying in ${Math.max(1, Math.round(jitteredDelay / 1000))}s.`;
+
+  reconnectTimer = setTimeout(async () => {
+    if (!(await healthCheck())) scheduleReconnect();
+  }, jitteredDelay);
+}
+
+function handleDisconnect() {
+  if (connectionState !== "connected") return;
+  setConnectionState("disconnected");
+  setStatus("Connection lost");
+  scheduleReconnect();
+  startHealthCheck();
+}
+
+function parseSseBlock(block) {
+  const lines = block.split("\n");
+  let eventType = "message";
+  const dataLines = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+    if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+  }
+
+  if (dataLines.length === 0) return null;
+  return { eventType, dataStr: dataLines.join("\n") };
+}
+
+async function sendMessageInternal(text, options = {}) {
+  const { echoUser = true } = options;
+  currentAssistantEl = null;
+  currentThinkingEl = null;
+  currentThinkingPre = null;
+  toolElements.clear();
+  toolElementsByKey.clear();
+  toolCallCounter = 0;
+
+  if (echoUser) addMsg("user", text);
+  input.value = "";
+  currentAssistantEl = addMsg("assistant", "", "cursor");
+  setStatus("Starting stream...");
+
+  try {
+    const controller = new AbortController();
+    const timeoutMs = serverConfig?.requestTimeoutMs || 3600000;
+    const timeoutTimer = setTimeout(() => controller.abort(), timeoutMs + 5000);
+
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, modelType: selModel.value, thinkingEnabled: chkThinking.checked }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutTimer);
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try {
+        const json = await resp.json();
+        if (json.error) detail = json.error;
+      } catch {}
+      throw new Error(detail);
+    }
+
+    reconnectAttempts = 0;
+    setConnectionState("connected");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        const parsed = parseSseBlock(block);
+        if (!parsed) continue;
+        try {
+          handleEvent(parsed.eventType, JSON.parse(parsed.dataStr));
+        } catch (err) {
+          console.warn("[SSE] Bad event", parsed, err);
+        }
+      }
+    }
+  } catch (err) {
+    removeIfEmpty(currentAssistantEl);
+    if (err.name === "AbortError") {
+      addMsg("error", "Request timed out. The server may still be processing.");
+    } else if (err.message.includes("fetch") || err.message.includes("NetworkError") || err.message.includes("Failed to fetch")) {
+      addMsg("error", `Connection error: ${err.message}`);
+      pendingMessage = text;
+      handleDisconnect();
+    } else {
+      addMsg("error", `Error: ${err.message}`);
+    }
+  } finally {
+    if (currentAssistantEl) currentAssistantEl.classList.remove("cursor");
+    setProcessing(false);
+    if (connectionState === "connected") setStatus("Ready");
+    input.focus();
+  }
+}
+
+async function sendMessage() {
+  const text = input.value.trim();
+  if (!text || processing) return;
+  setProcessing(true);
+  await sendMessageInternal(text);
+}
+
+function handleEvent(type, data) {
+  switch (type) {
+    case "text_delta":
+      if (currentAssistantEl) {
+        const wasPinned = shouldAutoScroll();
+        currentAssistantEl.textContent += data.delta;
+        scrollToBottomIfPinned(wasPinned);
+      }
+      break;
+    case "thinking_delta":
+      appendThinking(data.delta || "");
+      break;
+    case "stream_end":
+      if (currentAssistantEl) {
+        currentAssistantEl.textContent = data.fullText || currentAssistantEl.textContent;
+        currentAssistantEl.classList.remove("cursor");
+      }
+      break;
+    case "tool_call_detected":
+      createOrUpdateToolCall(data.name, data.args, data.toolCallId || `tc_${++toolCallCounter}`, "detected", data.toolKey);
+      setStatus(`Detected ${data.name}`);
+      break;
+    case "tool_call_start":
+      createOrUpdateToolCall(data.name, data.args, data.toolCallId || `tc_${++toolCallCounter}`, "running", data.toolKey);
+      setStatus(`Executing ${data.name}`);
+      break;
+    case "tool_result":
+      updateToolResult(data.toolCallId || `tc_${toolCallCounter}`, data.content || "", data.isError);
+      break;
+    case "round_complete":
+      setStatus(data.hasToolCalls ? `Round ${data.round} complete, continuing` : "Final answer complete");
+      break;
+    case "turn_complete":
+      updateHeader(data.turns || 0, data.messages?.length || 0);
+      if (currentAssistantEl) currentAssistantEl.classList.remove("cursor");
+      break;
+    case "warning":
+      addMsg("warning", data.message);
+      break;
+    case "error":
+      addMsg("error", data.message);
+      break;
+    case "network_error":
+      addMsg("error", data.message);
+      handleDisconnect();
+      break;
+    case "timeout":
+      addMsg("warning", data.message);
+      break;
+    case "idle_timeout":
+      addMsg("info", `Server idle timeout reached after ${Math.round(data.timeoutMs / 1000)}s.`);
+      handleDisconnect();
+      break;
+    case "ping":
+      lastPingTime = Date.now();
+      if (connectionState !== "connected") {
+        setConnectionState("connected");
+        setStatus("Reconnected");
+      }
+      break;
+    case "done":
+      setStatus("Ready");
+      break;
+    case "status":
+      setStatus(data.message);
+      break;
+  }
+}
+
+function startStaleDetection() {
+  setInterval(() => {
+    if (!processing || connectionState !== "connected") return;
+    const staleThreshold = (serverConfig?.heartbeatIntervalMs || 30000) * 3;
+    if (Date.now() - lastPingTime > staleThreshold) handleDisconnect();
+  }, 10000);
+}
+
+composer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendMessage();
+});
+
+input.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+});
+
+chat.addEventListener("scroll", updateScrollState, { passive: true });
+
+chat.addEventListener("wheel", (event) => {
+  if (event.deltaY < 0) autoStick = false;
+}, { passive: true });
+
+window.addEventListener("wheel", (event) => {
+  const target = event.target;
+  if (target.closest?.("#chat, textarea, select, button, pre")) return;
+  if (chat.scrollHeight <= chat.clientHeight) return;
+  event.preventDefault();
+  autoStick = event.deltaY > 0 && chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
+  chat.scrollBy({ top: event.deltaY, behavior: "auto" });
+  updateScrollState();
+}, { passive: false });
+
+btnBottom.addEventListener("click", scrollToBottom);
+
+btnClear.addEventListener("click", async () => {
+  chat.innerHTML = "";
+  toolElements.clear();
+  toolElementsByKey.clear();
+  currentAssistantEl = null;
+  currentThinkingEl = null;
+  currentThinkingPre = null;
+  pendingMessage = null;
+  try {
+    await fetch("/api/clear", { method: "POST" });
+    updateHeader(0, 0);
+    setStatus("Conversation cleared");
+  } catch (err) {
+    addMsg("error", `Failed to clear: ${err.message}`);
+  }
+});
+
+selModel.addEventListener("change", applySettings);
+chkThinking.addEventListener("change", applySettings);
+
+btnReconnect.addEventListener("click", async () => {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectAttempts = 0;
+  setConnectionState("reconnecting");
+  setStatus("Reconnecting...");
+  if (!(await healthCheck())) scheduleReconnect();
+});
+
+window.addEventListener("online", () => {
+  reconnectAttempts = 0;
+  healthCheck();
+});
+
+window.addEventListener("offline", handleDisconnect);
+
+(async () => {
+  await fetchServerConfig();
+  startHealthCheck();
+  startStaleDetection();
+  input.focus();
+})();
+</script>
+</body>
+</html>

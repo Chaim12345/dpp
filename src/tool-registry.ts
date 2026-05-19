@@ -19,7 +19,7 @@ export interface ToolDef {
 
 const readTool: ToolDef = {
   name: "read",
-  description: "Read a file. Args: path (required), offset (number, optional), limit (number, optional)",
+  description: "Read a UTF-8 text file. Args: path (required), offset (1-based line number, optional), limit (number of lines, optional). Use before editing files.",
   async execute(args) {
     const fp = String(args.path);
     const file = Bun.file(fp);
@@ -43,7 +43,7 @@ const readTool: ToolDef = {
 
 const writeTool: ToolDef = {
   name: "write",
-  description: "Write a file. Creates dirs. Args: path (required), content (required)",
+  description: "Write a complete file. Creates parent dirs when needed. Args: path (required), content (required). Prefer edit for small changes.",
   async execute(args) {
     const fp = String(args.path);
     await Bun.write(fp, String(args.content));
@@ -53,7 +53,7 @@ const writeTool: ToolDef = {
 
 const grepTool: ToolDef = {
   name: "grep",
-  description: "Search files with ripgrep. Args: pattern (required), path (string, optional), include (string, optional)",
+  description: "Search files with ripgrep. Args: pattern (required), path (optional), include glob like '*.ts' (optional). Use to locate code before reading/editing.",
   async execute(args) {
     try {
       const pattern = String(args.pattern).replace(/'/g, "'\\''");
@@ -80,7 +80,7 @@ const grepTool: ToolDef = {
 
 const bashTool: ToolDef = {
   name: "bash",
-  description: "Run a shell command. Args: command (required). 120s timeout.",
+  description: "Run a non-interactive shell command. Args: command (required). 120s timeout. Use for ls/find/build/test/status commands.",
   async execute(args) {
     const cmd = String(args.command);
     const shellPath = Bun.which("sh") || Bun.which("bash") || "/bin/sh";
@@ -101,7 +101,7 @@ const bashTool: ToolDef = {
 
 const editTool: ToolDef = {
   name: "edit",
-  description: "Find/replace in a file. Args: path (required), old_string (required), new_string (required)",
+  description: "Find/replace exact text in a file. Args: path (required), old_string (required), new_string (required). Fails if old_string is absent.",
   async execute(args) {
     const fp = String(args.path);
     const oldStr = String(args.old_string);
@@ -212,6 +212,58 @@ function normalizeToolArgs(c: any): Record<string, unknown> {
   return {};
 }
 
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
+}
+
+function coerceDsmlParam(value: string, attrs: string): unknown {
+  const decoded = decodeXmlText(value);
+  if (/\bstring=["']true["']/.test(attrs)) return decoded;
+  if (/\bnumber=["']true["']/.test(attrs)) {
+    const n = Number(decoded);
+    return Number.isNaN(n) ? decoded : n;
+  }
+  if (/\bboolean=["']true["']/.test(attrs)) {
+    if (decoded === "true") return true;
+    if (decoded === "false") return false;
+    return decoded;
+  }
+  if (/\bjson=["']true["']/.test(attrs)) {
+    try { return JSON.parse(decoded); } catch { return decoded; }
+  }
+  try { return JSON.parse(decoded); } catch { return decoded; }
+}
+
+function extractDeepSeekDsmlToolCalls(text: string): ToolCall[] | null {
+  const calls: ToolCall[] = [];
+  const invokeRegex = /<｜｜DSML｜｜invoke\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/｜｜DSML｜｜invoke>/g;
+  let invokeMatch: RegExpExecArray | null;
+
+  while ((invokeMatch = invokeRegex.exec(text)) !== null) {
+    const name = invokeMatch[1];
+    if (!toolMap[name]) continue;
+
+    const args: Record<string, unknown> = {};
+    const body = invokeMatch[2];
+    const paramRegex = /<｜｜DSML｜｜parameter\s+name=["']([^"']+)["']([^>]*)>([\s\S]*?)<\/｜｜DSML｜｜parameter>/g;
+    let paramMatch: RegExpExecArray | null;
+
+    while ((paramMatch = paramRegex.exec(body)) !== null) {
+      args[paramMatch[1]] = coerceDsmlParam(paramMatch[3], paramMatch[2] ?? "");
+    }
+
+    calls.push({ name, arguments: args });
+  }
+
+  return calls.length > 0 ? calls : null;
+}
+
 function extractJsonToolCalls(text: string): ToolCall[] | null {
   let startIdx = -1;
   const patterns = ['{"tool_calls"', '{"_calls"', '{"tool"'];
@@ -251,6 +303,9 @@ function extractJsonToolCalls(text: string): ToolCall[] | null {
 }
 
 function extractXmlToolCalls(text: string): ToolCall[] | null {
+  const dsml = extractDeepSeekDsmlToolCalls(text);
+  if (dsml) return dsml;
+
   // Try sax-wasm first (synchronous once WASM is loaded)
   if (isBatchReady() && batchParser && batchParser.isReady) {
     batchParser.reset();
@@ -293,9 +348,34 @@ function extractXmlToolCalls(text: string): ToolCall[] | null {
   return null;
 }
 
+/**
+ * Extract tool calls from inside markdown code blocks.
+ * Models sometimes wrap tool calls in ```json ... ``` — we need to look inside.
+ */
+function extractToolCallsFromCodeBlocks(text: string): ToolCall[] | null {
+  const codeBlockRegex = /```(?:json)?\s*\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    const inner = match[1].trim();
+    // Try JSON extraction on code block content
+    const j = extractJsonToolCalls(inner);
+    if (j && j.length > 0) return j;
+    // Try XML extraction on code block content
+    const x = extractXmlToolCalls(inner);
+    if (x && x.length > 0) return x;
+    // Try direct tool tags on code block content
+    const d = extractDirectToolTags(inner);
+    if (d.length > 0) return d;
+  }
+  return null;
+}
+
 export function extractToolCalls(text: string): ToolCall[] | null {
   const rawTcCount = (text.match(/<tool_calls>/g) || []).length;
   if (rawTcCount > 50) return null;
+
+  const dsml = extractDeepSeekDsmlToolCalls(text);
+  if (dsml) return dsml;
 
   const d = extractDirectToolTags(text);
   if (d.length > 0) return d;
@@ -306,11 +386,36 @@ export function extractToolCalls(text: string): ToolCall[] | null {
   const x = extractXmlToolCalls(text);
   if (x) return x;
 
+  // Fallback: look inside markdown code blocks
+  const cb = extractToolCallsFromCodeBlocks(text);
+  if (cb) return cb;
+
   return null;
 }
 
 export function stripToolCalls(text: string): string {
   let result = text;
+
+  for (const [start, end] of [
+    ['<_calls>', '</_calls>'],
+    ['<｜｜DSML｜｜tool_calls>', '</｜｜DSML｜｜tool_calls>'],
+    ['<tool_calls>', '</｜｜DSML｜｜tool_calls>'],
+    ['<tool_calls>', '</tool_calls>'],
+    ['<function_calls>', '</function_calls>'],
+    ['<pi-tool-calls>', '</pi-tool-calls>'],
+  ] as const) {
+    let idx = result.indexOf(start);
+    while (idx !== -1) {
+      const endIdx = result.indexOf(end, idx);
+      if (endIdx !== -1) {
+        result = result.slice(0, idx) + result.slice(endIdx + end.length);
+      } else {
+        result = result.slice(0, idx);
+        break;
+      }
+      idx = result.indexOf(start);
+    }
+  }
 
   const dsmlStart = '<｜｜DSML｜｜tool_calls>';
   const dsmlEnd = '</｜｜DSML｜｜tool_calls>';
@@ -390,6 +495,7 @@ export function stripToolCalls(text: string): string {
       let depth = 0;
       let inStr = false;
       let end = idx;
+      let foundEnd = false;
       for (let i = idx; i < result.length; i++) {
         const c = result[i];
         if (inStr) {
@@ -399,7 +505,11 @@ export function stripToolCalls(text: string): string {
         }
         if (c === '"') { inStr = true; continue; }
         if (c === "{") depth++;
-        else if (c === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
+        else if (c === "}") { depth--; if (depth === 0) { end = i + 1; foundEnd = true; break; } }
+      }
+      if (!foundEnd) {
+        result = result.slice(0, idx);
+        break;
       }
       result = result.slice(0, idx) + result.slice(end);
     }

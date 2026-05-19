@@ -1,6 +1,6 @@
 // ── DeepSeek Agent REPL TUI ───────────────────────────
 // neo-blessed + plain ANSI fallback. Mouse never enabled.
-// Streaming: content flows via logBox.add() for O(1) per-chunk perf.
+// Uses box element (not log) for setContent() compatibility.
 // Renders are batched via setImmediate to prevent freezing.
 
 export const term = {
@@ -50,7 +50,7 @@ let sections: TuiSection[] = [];
 let promptLabel = "> ";
 let statusMsg = "Ready";
 let screen: any = null;
-let logBox: any = null;
+let contentBox: any = null;
 let statusBar: any = null;
 let inputBox: any = null;
 let headerBox: any = null;
@@ -108,19 +108,11 @@ function stopSpinner(): void {
   isProcessing = false;
 }
 
-// ── Core blessed log helpers ───────────────────────────
+// ── Core blessed content helpers ───────────────────────
 function logLine(text: string): void {
-  if (blessedMode && logBox) {
-    logBox.add(text);
-    scheduleRender();
-  } else {
-    process.stdout.write(text.replace(/\{[^\}]+\}/g, "") + "\n");
-  }
-}
-
-function logTagged(text: string): void {
-  if (blessedMode && logBox) {
-    logBox.add(text);
+  if (blessedMode && contentBox) {
+    const current = contentBox.getContent() || "";
+    contentBox.setContent(current + text.replace(/\{[^\}]+\}/g, "") + "\n");
     scheduleRender();
   } else {
     process.stdout.write(text.replace(/\{[^\}]+\}/g, "") + "\n");
@@ -137,19 +129,23 @@ function renderSectionHeader(s: TuiSection): string {
   return `{${s.color}-fg}${collapse} ${icon} ${s.title}{/${s.color}-fg}${statusSuffix}`;
 }
 
-function renderAllSections(): void {
-  if (!blessedMode || !logBox) return;
-  logBox.setContent("");
+function buildSectionsContent(): string {
+  const parts: string[] = [];
   for (const s of sections) {
-    logBox.add(renderSectionHeader(s));
+    parts.push(renderSectionHeader(s));
     if (!s.collapsed && s.detail) {
       const lines = s.detail.split("\n");
       for (const line of lines) {
-        logBox.add(`  {${s.color}-fg}${line}{/${s.color}-fg}`);
+        parts.push(`  {${s.color}-fg}${line}{/${s.color}-fg}`);
       }
     }
   }
-  logBox.setScrollPerc(100);
+  return parts.join("\n");
+}
+
+function renderAllSections(): void {
+  if (!blessedMode || !contentBox) return;
+  contentBox.setContent(buildSectionsContent());
   scheduleRender();
 }
 
@@ -158,7 +154,18 @@ export function addSection(title: string, detail: string, color = "cyan", collap
   const s: TuiSection = { id, title, detail, collapsed, color, status: "" };
   sections.push(s);
   if (blessedMode) {
-    renderAllSections();
+    // Append only the new section instead of full rebuild
+    const header = renderSectionHeader(s);
+    const current = contentBox.getContent() || "";
+    let content = current + (current ? "\n" : "") + header;
+    if (!collapsed && detail) {
+      const lines = detail.split("\n");
+      for (const line of lines) {
+        content += `\n  {${color}-fg}${line}{/${color}-fg}`;
+      }
+    }
+    contentBox.setContent(content);
+    scheduleRender();
   } else {
     logLine(`${ansi(color)}── ${title} ──${A.reset}`);
     if (detail && !collapsed) logLine(detail);
@@ -180,7 +187,15 @@ export function appendSection(idx: number, delta: string): void {
   if (idx < 0 || idx >= sections.length) return;
   sections[idx].detail += delta;
   if (blessedMode) {
-    renderAllSections();
+    // For append, directly append to box content (faster than full rebuild)
+    const lines = delta.split("\n");
+    let appendText = "";
+    for (const line of lines) {
+      appendText += `\n  {${sections[idx].color}-fg}${line}{/${sections[idx].color}-fg}`;
+    }
+    const current = contentBox.getContent() || "";
+    contentBox.setContent(current + appendText);
+    scheduleRender();
   } else {
     process.stdout.write(delta);
   }
@@ -207,10 +222,14 @@ export function toggleSection(idx: number): void {
 export function clearSections(): void {
   sections = [];
   sectionIdCounter = 0;
-  if (blessedMode && logBox) {
-    logBox.setContent("");
+  if (blessedMode && contentBox) {
+    contentBox.setContent("");
     scheduleRender();
   }
+}
+
+export function getSectionCount(): number {
+  return sections.length;
 }
 
 // ── Status bar ────────────────────────────────────────
@@ -297,8 +316,8 @@ export async function startTui(onLine: (line: string) => void | Promise<void>): 
   });
   screen.append(headerBox);
 
-  // Log area
-  logBox = blessed.log({
+  // Content area (box, not log — supports setContent properly)
+  contentBox = blessed.box({
     top: 1, left: 0, width: "100%", bottom: 3,
     bg: tc("bg"), fg: tc("text"),
     scrollable: true,
@@ -308,7 +327,7 @@ export async function startTui(onLine: (line: string) => void | Promise<void>): 
     mouse: false,
     keys: false,
   });
-  screen.append(logBox);
+  screen.append(contentBox);
 
   // Status bar
   statusBar = blessed.box({

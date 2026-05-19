@@ -11,7 +11,6 @@
         "blessed": "",
         "neo-blessed": "^0.2.0",
         "sax-wasm": "^3.1.4",
-        "vectorjson": "^0.5.1",
       },
       "devDependencies": {
         "@types/node": "latest",
@@ -377,8 +376,6 @@
     "undici": ["undici@7.25.0", "", {}, "sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ=="],
 
     "undici-types": ["undici-types@7.19.2", "", {}, "sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg=="],
-
-    "vectorjson": ["vectorjson@0.5.1", "", {}, "sha512-GpmBSumHLCXKezb81AHK1N5IIq2Lozo2+U9c+aSJgLqGvxwZcWHBel0j+gdSK2cRQYtLtSS6+aCdaVv7YU1tXg=="],
 
     "web-streams-polyfill": ["web-streams-polyfill@3.3.3", "", {}, "sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw=="],
 
