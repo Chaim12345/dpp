@@ -795,7 +795,10 @@ export async function* parseSseStream(
         }
 
         const result = parseSseLine(dataStr, state);
-        if (result === null) continue;
+        if (result === null) {
+          // Log unparsed data for debugging
+          continue;
+        }
 
         if (Array.isArray(result)) {
           for (const event of result) {

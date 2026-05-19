@@ -1,6 +1,6 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile, stat, readdir } from "node:fs/promises";
+import { readFile, writeFile, stat, readdir } from "node:fs/promises";
 import { Type, type Tool } from "@mariozechner/pi-ai";
 import { summarizeToolOutput } from "./context-compact.js";
 
@@ -18,11 +18,51 @@ export const toolDefs: Tool[] = [
     }),
   },
   {
+    name: "write",
+    description: "Write content to a file, creating or overwriting it.",
+    parameters: Type.Object({
+      path: Type.String({ description: "File path to write to" }),
+      content: Type.String({ description: "Text content to write" }),
+    }),
+  },
+  {
+    name: "edit",
+    description: "Edit a file using exact text replacement. Replaces the first occurrence of 'oldText' with 'newText'.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Path to the file to edit" }),
+      oldText: Type.String({ description: "Text to find (exact match)" }),
+      newText: Type.String({ description: "Replacement text" }),
+    }),
+  },
+  {
     name: "bash",
     description: "Run a shell command and capture stdout/stderr.",
     parameters: Type.Object({
       command: Type.String(),
       cwd: Type.Optional(Type.String()),
+    }),
+  },
+  {
+    name: "grep",
+    description: "Search for a regex pattern inside files using ripgrep.",
+    parameters: Type.Object({
+      pattern: Type.String({ description: "Regex pattern to search for" }),
+      path: Type.Optional(Type.String({ description: "File or directory to search" })),
+      flags: Type.Optional(Type.String({ description: "Regex flags (e.g., i, m)" })),
+    }),
+  },
+  {
+    name: "glob",
+    description: "Find files matching a glob pattern (e.g., 'src/**/*.ts').",
+    parameters: Type.Object({
+      pattern: Type.String({ description: "Glob pattern" }),
+    }),
+  },
+  {
+    name: "ls",
+    description: "List directory contents.",
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ description: "Directory to list (defaults to cwd)" })),
     }),
   },
 ];
@@ -96,6 +136,61 @@ export async function executeTool(name: string, args: any): Promise<{ content: s
 
       const output = await readSingleFile(String(args.path), args.offset, args.limit);
       return { content: summarizeToolOutput(output), isError: false };
+    }
+
+    if (name === "write") {
+      if (!args.path || typeof args.path !== "string") return { content: "Missing 'path' argument", isError: true };
+      if (args.content === undefined) return { content: "Missing 'content' argument", isError: true };
+      await writeFile(String(args.path), String(args.content), "utf8");
+      return { content: `Written ${String(args.content).length} bytes to ${args.path}`, isError: false };
+    }
+
+    if (name === "edit") {
+      if (!args.path || !args.oldText || !args.newText) return { content: "Missing 'path', 'oldText', or 'newText' argument", isError: true };
+      const filePath = String(args.path);
+      const text = await readFile(filePath, "utf8");
+      const idx = text.indexOf(String(args.oldText));
+      if (idx === -1) return { content: `Text not found in ${filePath}`, isError: true };
+      const updated = text.slice(0, idx) + String(args.newText) + text.slice(idx + String(args.oldText).length);
+      await writeFile(filePath, updated, "utf8");
+      return { content: `Replaced 1 occurrence in ${filePath}`, isError: false };
+    }
+
+    if (name === "grep") {
+      if (!args.pattern) return { content: "Missing 'pattern' argument", isError: true };
+      const searchPath = args.path || ".";
+      const flags = args.flags ? `-${args.flags}` : "-n";
+      try {
+        const result = await execAsync(`rg ${flags} -- ${JSON.stringify(String(args.pattern))} ${searchPath}`, { maxBuffer: 1024 * 1024 });
+        return { content: summarizeToolOutput(result.stdout || "(no matches)"), isError: false };
+      } catch (err: any) {
+        if (err.stdout) return { content: summarizeToolOutput(err.stdout), isError: false };
+        return { content: err.stderr || "No matches found", isError: false };
+      }
+    }
+
+    if (name === "glob") {
+      if (!args.pattern) return { content: "Missing 'pattern' argument", isError: true };
+      try {
+        const result = await execAsync(`find . -name ${JSON.stringify(String(args.pattern).split('/').pop() || '*')} 2>/dev/null | head -50`, { maxBuffer: 1024 * 256 });
+        return { content: summarizeToolOutput(result.stdout.trim() || "(no files matched)"), isError: false };
+      } catch (err: any) {
+        return { content: err.stdout?.trim() || "(no files matched)", isError: false };
+      }
+    }
+
+    if (name === "ls") {
+      const dirPath = args.path || ".";
+      try {
+        const entries = await readdir(dirPath, { withFileTypes: true });
+        const lines = entries.map((e) => {
+          const type = e.isDirectory() ? "d" : e.isSymbolicLink() ? "l" : "-";
+          return `${type} ${e.name}`;
+        });
+        return { content: summarizeToolOutput(lines.join("\n") || "(empty directory)"), isError: false };
+      } catch (err) {
+        return { content: `ls failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
     }
 
     if (name === "bash") {

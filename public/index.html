@@ -3,501 +3,934 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DeepSeek Agent Console</title>
+<title>DeepSeek Agent</title>
 <style>
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #101114;
-    --panel: #17191d;
-    --panel-2: #202329;
-    --line: #333842;
-    --text: #ece7dd;
-    --muted: #9b958c;
-    --faint: #6f737d;
-    --accent: #d7ff64;
-    --blue: #6cb7ff;
-    --green: #7bd88f;
-    --red: #ff6b6b;
-    --amber: #ffbd5c;
-    --shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
+    --bg: #0d0f13;
+    --surface: #14161b;
+    --surface-2: #1c1f26;
+    --surface-3: #252830;
+    --border: #2e323b;
+    --text: #e4e0d8;
+    --text-2: #a8a29e;
+    --text-3: #6b7280;
+    --accent: #a5f3fc;
+    --accent-2: #67e8f9;
+    --green: #86efac;
+    --red: #fca5a5;
+    --amber: #fcd34d;
+    --purple: #c4b5fd;
+    --blue: #93c5fd;
+    --pink: #f9a8d4;
+    --code-bg: #111318;
+    --user-bg: rgba(165, 243, 252, 0.06);
+    --user-border: rgba(165, 243, 252, 0.15);
+    --assistant-bg: var(--surface-2);
+    --assistant-border: var(--border);
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.3);
   }
 
-  html, body {
-    height: 100%;
-  }
+  html, body { height: 100%; }
 
   body {
-    margin: 0;
-    min-height: 100%;
-    overflow: hidden;
-    background:
-      linear-gradient(135deg, rgba(215, 255, 100, 0.06), transparent 32%),
-      radial-gradient(circle at 85% 20%, rgba(108, 183, 255, 0.13), transparent 28%),
-      var(--bg);
+    background: var(--bg);
     color: var(--text);
-    font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    overflow: hidden;
   }
 
   button, select, textarea, input { font: inherit; }
+  button { cursor: pointer; border: none; background: none; color: inherit; }
 
+  /* ── Layout ────────────────────────────────── */
   .app {
     height: 100dvh;
-    min-height: 0;
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 260px 1fr;
   }
 
-  .rail {
-    border-right: 1px solid var(--line);
-    background: rgba(23, 25, 29, 0.92);
-    padding: 22px;
+  /* ── Sidebar ───────────────────────────────── */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
-  .brand {
-    display: grid;
-    gap: 6px;
+  .sidebar-header {
+    padding: 18px 16px 14px;
+    border-bottom: 1px solid var(--border);
   }
 
-  .brand h1 {
-    margin: 0;
-    font-size: 18px;
-    letter-spacing: 0;
-  }
-
-  .brand span {
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.5;
-  }
-
-  .field {
-    display: grid;
-    gap: 7px;
-  }
-
-  .field label {
-    color: var(--muted);
-    font-size: 11px;
-    text-transform: uppercase;
-  }
-
-  select, .toggle, .ghost {
-    width: 100%;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--panel-2);
-    color: var(--text);
-    min-height: 38px;
-  }
-
-  select { padding: 0 12px; }
-
-  .toggle {
+  .sidebar-header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 12px;
-    cursor: pointer;
-  }
-
-  .toggle input { accent-color: var(--accent); }
-
-  .ghost {
-    cursor: pointer;
-    color: var(--muted);
-  }
-
-  .ghost:hover { color: var(--text); border-color: var(--accent); }
-
-  .metrics {
-    margin-top: auto;
-    display: grid;
     gap: 8px;
   }
 
-  .metric {
-    display: flex;
-    justify-content: space-between;
-    color: var(--muted);
-    font-size: 12px;
-    border-top: 1px solid var(--line);
-    padding-top: 10px;
-  }
-
-  .metric strong { color: var(--text); font-weight: 600; }
-
-  .workspace {
-    min-width: 0;
-    min-height: 0;
-    height: 100%;
-    overflow: hidden;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
-  }
-
-  .topbar {
-    min-height: 64px;
-    border-bottom: 1px solid var(--line);
-    background: rgba(16, 17, 20, 0.72);
-    backdrop-filter: blur(18px);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 0 24px;
-  }
-
-  .run-title {
-    min-width: 0;
-    display: grid;
-    gap: 4px;
-  }
-
-  .run-title strong { font-size: 14px; }
-  .run-title span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .pill {
+  .sidebar-header h1 .logo {
+    width: 22px; height: 22px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    border-radius: 6px;
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    min-height: 32px;
-    padding: 0 11px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    color: var(--muted);
-    background: var(--panel);
+    justify-content: center;
     font-size: 12px;
+  }
+
+  .sidebar-header p {
+    color: var(--text-3);
+    font-size: 12px;
+    margin-top: 3px;
+  }
+
+  .sidebar-section {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-section h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-3);
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+
+  .field { display: grid; gap: 6px; margin-bottom: 10px; }
+  .field label { color: var(--text-2); font-size: 12px; }
+
+  select, .sidebar-btn {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
+    transition: border-color 0.15s;
+  }
+  select:focus, .sidebar-btn:focus { outline: none; border-color: var(--accent); }
+  select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236b7280' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+
+  .sidebar-btn {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .sidebar-btn:hover { border-color: var(--accent); color: var(--text); }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+  }
+  .toggle-row span { font-size: 13px; color: var(--text-2); }
+  .toggle-row input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 16px; height: 16px;
+  }
+
+  .sidebar-metrics {
+    margin-top: auto;
+    padding: 14px 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .metric-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-3);
+    padding: 3px 0;
+  }
+  .metric-row strong { color: var(--text-2); font-weight: 500; }
+  .metric-row .val-amber { color: var(--amber); }
+
+  /* ── Main area ─────────────────────────────── */
+  .main {
+    display: grid;
+    grid-template-rows: auto 1fr auto auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* ── Top bar ───────────────────────────────── */
+  .topbar {
+    min-height: 52px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(13, 15, 19, 0.85);
+    backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    gap: 12px;
+  }
+
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .topbar-status {
+    font-size: 13px;
+    color: var(--text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .top-actions {
+  .conn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 11px;
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  .conn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+  }
+  .conn-dot.disconnected { background: var(--red); animation: pulse 1.5s infinite; }
+  .conn-dot.reconnecting { background: var(--amber); animation: pulse 0.8s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .topbar-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
 
-  .jump {
-    min-height: 32px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--panel);
-    color: var(--muted);
-    padding: 0 12px;
-    cursor: pointer;
+  .icon-btn {
+    width: 34px; height: 34px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-3);
+    transition: all 0.15s;
+    font-size: 16px;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+
+  .scroll-btn {
     display: none;
-  }
-
-  .jump.visible { display: inline-flex; align-items: center; }
-  .jump:hover { color: var(--text); border-color: var(--accent); }
-
-  .dot {
-    width: 8px;
-    height: 8px;
+    padding: 4px 12px;
     border-radius: 999px;
-    background: var(--green);
-    box-shadow: 0 0 16px rgba(123, 216, 143, 0.7);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-3);
+    font-size: 11px;
+    align-items: center;
+    gap: 4px;
   }
+  .scroll-btn.visible { display: inline-flex; }
+  .scroll-btn:hover { color: var(--text); border-color: var(--accent); }
 
-  .dot.disconnected { background: var(--red); box-shadow: 0 0 16px rgba(255, 107, 107, 0.7); }
-  .dot.reconnecting { background: var(--amber); box-shadow: 0 0 16px rgba(255, 189, 92, 0.7); animation: pulse 1s infinite; }
-  @keyframes pulse { 50% { opacity: 0.35; } }
-
+  /* ── Chat area ─────────────────────────────── */
   #chat {
     min-height: 0;
-    height: 100%;
     overflow-y: auto;
-    overscroll-behavior: contain;
+    padding: 20px;
     scroll-behavior: smooth;
-    -webkit-overflow-scrolling: touch;
-    touch-action: pan-y;
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
   }
 
-  #chat::-webkit-scrollbar { width: 10px; }
+  #chat::-webkit-scrollbar { width: 6px; }
   #chat::-webkit-scrollbar-track { background: transparent; }
-  #chat::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+  #chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  .msg {
-    width: min(900px, 92%);
-    border: 1px solid var(--line);
+  /* ── Welcome screen ────────────────────────── */
+  .welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    text-align: center;
+    gap: 16px;
+    padding: 40px 20px;
+  }
+
+  .welcome-icon {
+    width: 56px; height: 56px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+  }
+
+  .welcome h2 {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .welcome p {
+    color: var(--text-3);
+    font-size: 14px;
+    max-width: 400px;
+  }
+
+  .welcome-suggestions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+    max-width: 600px;
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  .suggestion {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 13px;
+    text-align: left;
+    transition: all 0.15s;
+    cursor: pointer;
+  }
+  .suggestion:hover { border-color: var(--accent); color: var(--text); background: var(--surface-3); }
+
+  /* ── Messages ──────────────────────────────── */
+  .msg-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    max-width: 860px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .msg-row.user { flex-direction: row-reverse; }
+
+  .msg-avatar {
+    width: 32px; height: 32px;
     border-radius: 8px;
-    padding: 13px 15px;
-    line-height: 1.55;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .msg-row.user .msg-avatar {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: var(--bg);
+  }
+
+  .msg-row.assistant .msg-avatar {
+    background: linear-gradient(135deg, var(--purple), var(--blue));
+    color: white;
+  }
+
+  .msg-body {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .msg-bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    line-height: 1.6;
+    word-break: break-word;
+    position: relative;
+  }
+
+  .msg-row.user .msg-bubble {
+    background: var(--user-bg);
+    border: 1px solid var(--user-border);
+    border-top-right-radius: 4px;
+  }
+
+  .msg-row.assistant .msg-bubble {
+    background: var(--assistant-bg);
+    border: 1px solid var(--assistant-border);
+    border-top-left-radius: 4px;
+  }
+
+  .msg-bubble.streaming::after {
+    content: "▌";
+    animation: blink 1s step-end infinite;
+    color: var(--accent);
+  }
+
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+  .msg-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .msg-row:hover .msg-actions { opacity: 1; }
+
+  .msg-action-btn {
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--text-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s;
+  }
+  .msg-action-btn:hover { background: var(--surface-3); color: var(--text); }
+
+  .msg-time {
+    font-size: 10px;
+    color: var(--text-3);
+    margin-top: 4px;
+  }
+
+  /* ── Markdown rendering ────────────────────── */
+  .md p { margin-bottom: 0.5em; }
+  .md p:last-child { margin-bottom: 0; }
+  .md strong { font-weight: 600; }
+  .md em { font-style: italic; }
+  .md a { color: var(--accent); text-decoration: underline; }
+  .md ul, .md ol { padding-left: 1.5em; margin: 0.5em 0; }
+  .md li { margin: 0.2em 0; }
+  .md h1, .md h2, .md h3, .md h4 {
+    font-weight: 600;
+    margin: 0.8em 0 0.4em;
+    letter-spacing: -0.01em;
+  }
+  .md h1 { font-size: 1.3em; }
+  .md h2 { font-size: 1.15em; }
+  .md h3 { font-size: 1.05em; }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+  .md blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+    color: var(--text-2);
+    margin: 0.5em 0;
+  }
+  .md table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 13px; }
+  .md th { background: var(--surface-3); font-weight: 600; }
+
+  /* ── Code blocks ───────────────────────────── */
+  .md code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.88em;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  }
+
+  .code-block {
+    position: relative;
+    margin: 0.6em 0;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .code-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: var(--surface-3);
+    font-size: 11px;
+    color: var(--text-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .code-block-header .lang { font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+
+  .copy-btn {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover { background: var(--surface-2); color: var(--text); }
+  .copy-btn.copied { color: var(--green); }
+
+  .code-block pre {
+    margin: 0;
+    padding: 12px;
+    overflow-x: auto;
+    background: var(--code-bg);
+    font-size: 13px;
+    line-height: 1.5;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    tab-size: 2;
+  }
+
+  .code-block pre::-webkit-scrollbar { height: 5px; }
+  .code-block pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Syntax highlighting */
+  .hl-keyword { color: var(--purple); }
+  .hl-string { color: var(--green); }
+  .hl-number { color: var(--amber); }
+  .hl-comment { color: var(--text-3); font-style: italic; }
+  .hl-function { color: var(--blue); }
+  .hl-type { color: var(--accent); }
+  .hl-operator { color: var(--pink); }
+  .hl-variable { color: var(--text); }
+
+  /* ── Thinking panel ────────────────────────── */
+  .thinking-panel {
+    max-width: 860px;
+    margin: 0 auto 16px;
+    border: 1px solid rgba(147, 197, 253, 0.2);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: rgba(13, 15, 19, 0.6);
+  }
+
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+  .thinking-header:hover { background: rgba(147, 197, 253, 0.05); }
+  .thinking-header .arrow { transition: transform 0.2s; display: inline-block; }
+  .thinking-panel.collapsed .thinking-header .arrow { transform: rotate(-90deg); }
+
+  .thinking-content {
+    padding: 12px 14px;
     white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    background: rgba(23, 25, 29, 0.86);
-    box-shadow: var(--shadow);
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.5;
+    max-height: 300px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(147, 197, 253, 0.1);
+  }
+
+  .thinking-panel.collapsed .thinking-content { display: none; }
+
+  /* ── Tool calls ────────────────────────────── */
+  .tool-card {
+    max-width: 860px;
+    margin: 0 auto 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
     font-size: 13px;
   }
 
-  .msg.user {
-    align-self: flex-end;
-    border-color: rgba(108, 183, 255, 0.45);
-    background: rgba(31, 45, 58, 0.9);
-  }
-
-  .msg.assistant {
-    align-self: flex-start;
-    border-color: rgba(215, 255, 100, 0.28);
-  }
-
-  .thinking {
-    width: min(900px, 92%);
-    align-self: flex-start;
-    border: 1px solid rgba(108, 183, 255, 0.28);
-    border-radius: 8px;
-    background: rgba(16, 23, 31, 0.86);
-    overflow: hidden;
-  }
-
-  .thinking summary {
-    cursor: pointer;
-    padding: 10px 13px;
-    color: var(--blue);
-    font-size: 12px;
-    user-select: none;
-  }
-
-  .thinking pre {
-    margin: 0;
-    max-height: 260px;
-    overflow: auto;
-    border-top: 1px solid var(--line);
-    padding: 12px;
-    white-space: pre-wrap;
-    color: #c9d9e8;
-    line-height: 1.5;
-  }
-
-  .msg.warning, .msg.error, .msg.info {
-    width: auto;
-    max-width: 840px;
-    align-self: center;
-    box-shadow: none;
-    font-size: 12px;
-  }
-
-  .msg.warning { color: var(--amber); border-color: rgba(255, 189, 92, 0.4); }
-  .msg.error { color: var(--red); border-color: rgba(255, 107, 107, 0.4); }
-  .msg.info { color: var(--blue); border-color: rgba(108, 183, 255, 0.35); }
-
-  .cursor::after {
-    content: "";
-    display: inline-block;
-    width: 7px;
-    height: 15px;
-    margin-left: 4px;
-    background: var(--accent);
-    vertical-align: -2px;
-    animation: blink 1s step-end infinite;
-  }
-
-  @keyframes blink { 50% { opacity: 0; } }
-
-  .tool-call {
-    width: min(900px, 92%);
-    align-self: flex-start;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    overflow: hidden;
-    background: rgba(23, 25, 29, 0.94);
-  }
-
-  .tool-call.detected { border-color: rgba(255, 189, 92, 0.42); }
-  .tool-call.running { border-color: rgba(108, 183, 255, 0.48); }
-  .tool-call.done { border-color: rgba(123, 216, 143, 0.38); }
-  .tool-call.failed { border-color: rgba(255, 107, 107, 0.45); }
-
-  .tool-header {
-    width: 100%;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--text);
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
-    gap: 10px;
+  .tool-card-header {
+    display: flex;
     align-items: center;
-    padding: 11px 13px;
+    gap: 8px;
+    padding: 10px 14px;
     cursor: pointer;
-    text-align: left;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .tool-card-header:hover { background: var(--surface-2); }
+
+  .tool-status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
-  .tool-header:hover { background: rgba(255, 255, 255, 0.03); }
-  .tool-name { color: var(--accent); font-weight: 700; }
-  .tool-args { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tool-phase { color: var(--faint); font-size: 11px; text-transform: uppercase; }
-  .tool-body { display: none; border-top: 1px solid var(--line); padding: 12px; }
-  .tool-body.open { display: grid; gap: 10px; }
-  .tool-body pre {
-    margin: 0;
-    overflow: auto;
-    max-height: 320px;
-    border-radius: 7px;
-    background: #0b0c0f;
-    padding: 12px;
-    color: #d8d2c8;
+  .tool-card.detected .tool-status-dot { background: var(--blue); }
+  .tool-card.running .tool-status-dot { background: var(--amber); animation: pulse 0.8s infinite; }
+  .tool-card.success .tool-status-dot { background: var(--green); }
+  .tool-card.error .tool-status-dot { background: var(--red); }
+
+  .tool-name { font-weight: 600; color: var(--text); }
+  .tool-args { color: var(--text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .tool-duration { color: var(--text-3); font-size: 11px; margin-left: auto; white-space: nowrap; }
+  .tool-arrow { color: var(--text-3); font-size: 12px; transition: transform 0.2s; }
+  .tool-card.expanded .tool-arrow { transform: rotate(180deg); }
+
+  .tool-result {
+    display: none;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
     white-space: pre-wrap;
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.45;
+    max-height: 400px;
+    overflow-y: auto;
+    word-break: break-word;
   }
-  .tool-status.ok { color: var(--green); }
-  .tool-status.err { color: var(--red); }
 
+  .tool-card.expanded .tool-result { display: block; }
+  .tool-card.error .tool-result { color: var(--red); }
+
+  .tool-result::-webkit-scrollbar { width: 5px; }
+  .tool-result::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── System messages ───────────────────────── */
+  .sys-msg {
+    max-width: 600px;
+    margin: 8px auto;
+    text-align: center;
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .sys-msg.warning { background: rgba(252, 211, 77, 0.08); color: var(--amber); border: 1px solid rgba(252, 211, 77, 0.15); }
+  .sys-msg.error { background: rgba(252, 165, 165, 0.08); color: var(--red); border: 1px solid rgba(252, 165, 165, 0.15); }
+  .sys-msg.info { background: rgba(147, 197, 253, 0.08); color: var(--blue); border: 1px solid rgba(147, 197, 253, 0.15); }
+
+  /* ── Reconnect banner ──────────────────────── */
   #reconnect-banner {
     display: none;
-    margin: 0 24px 12px;
-    border: 1px solid rgba(255, 189, 92, 0.45);
-    border-radius: 8px;
-    background: rgba(255, 189, 92, 0.08);
-    color: var(--amber);
-    padding: 10px 12px;
-    font-size: 12px;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
     gap: 12px;
+    min-height: 42px;
+    background: rgba(252, 165, 165, 0.08);
+    border-top: 1px solid rgba(252, 165, 165, 0.15);
+    color: var(--red);
+    font-size: 12px;
+    padding: 0 20px;
   }
-
   #reconnect-banner.visible { display: flex; }
+  #reconnect-banner button {
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+  }
+  #reconnect-banner button:hover { background: rgba(252, 165, 165, 0.1); }
 
-  #btn-reconnect {
-    border: 0;
-    border-radius: 7px;
-    background: var(--amber);
-    color: #16120a;
-    min-height: 30px;
-    padding: 0 12px;
-    cursor: pointer;
+  /* ── Composer ──────────────────────────────── */
+  .composer-wrap {
+    padding: 14px 20px 16px;
+    border-top: 1px solid var(--border);
+    background: rgba(13, 15, 19, 0.9);
+    backdrop-filter: blur(12px);
   }
 
   .composer {
-    border-top: 1px solid var(--line);
-    background: rgba(23, 25, 29, 0.95);
-    padding: 16px 24px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 12px;
-    align-items: end;
+    max-width: 860px;
+    margin: 0 auto;
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
   }
 
-  #input {
-    width: 100%;
-    min-height: 54px;
-    max-height: 180px;
-    resize: vertical;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: #0b0c0f;
-    color: var(--text);
-    padding: 14px;
+  .composer textarea {
+    flex: 1;
+    min-height: 48px;
+    max-height: 200px;
+    resize: none;
     outline: none;
-    line-height: 1.45;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text);
+    padding: 12px 16px;
+    line-height: 1.5;
+    font-size: 14px;
+    transition: border-color 0.15s;
   }
+  .composer textarea:focus { border-color: var(--accent); }
+  .composer textarea::placeholder { color: var(--text-3); }
+  .composer textarea:disabled { opacity: 0.5; }
 
-  #input:focus { border-color: var(--accent); }
-
-  #btn-send {
-    min-width: 104px;
-    min-height: 54px;
-    border: 0;
-    border-radius: 8px;
+  .send-btn {
+    min-height: 48px;
+    min-width: 48px;
+    border-radius: var(--radius);
     background: var(--accent);
-    color: #15170c;
-    font-weight: 800;
+    color: var(--bg);
+    font-weight: 600;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .send-btn:hover { filter: brightness(1.1); transform: scale(1.05); }
+  .send-btn:disabled { filter: grayscale(0.6); cursor: not-allowed; transform: none; }
+
+  .composer-hints {
+    max-width: 860px;
+    margin: 6px auto 0;
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--text-3);
+  }
+  .composer-hints kbd {
+    display: inline-block;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 10px;
+    background: var(--surface-2);
+  }
+
+  /* ── Toast notifications ───────────────────── */
+  .toast-container {
+    position: fixed;
+    bottom: 100px;
+    right: 20px;
+    z-index: 999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .toast {
+    padding: 10px 16px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
+    box-shadow: var(--shadow);
+    animation: toastIn 0.2s ease-out;
+    max-width: 300px;
+  }
+
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Search overlay ────────────────────────── */
+  .search-overlay {
+    display: none;
+    position: fixed;
+    top: 60px;
+    right: 20px;
+    z-index: 100;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    box-shadow: var(--shadow);
+    width: 320px;
+  }
+  .search-overlay.visible { display: block; }
+
+  .search-overlay input {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    padding: 8px 12px;
+    font-size: 13px;
+    outline: none;
+  }
+  .search-overlay input:focus { border-color: var(--accent); }
+
+  .search-results {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-3);
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .search-hit {
+    padding: 6px 8px;
+    border-radius: 4px;
     cursor: pointer;
+    transition: background 0.1s;
+  }
+  .search-hit:hover { background: var(--surface-2); }
+  .search-hit mark { background: rgba(165, 243, 252, 0.3); color: var(--text); border-radius: 2px; padding: 0 2px; }
+
+  /* ── Mobile ────────────────────────────────── */
+  @media (max-width: 768px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar {
+      position: fixed;
+      left: -280px;
+      top: 0;
+      bottom: 0;
+      width: 280px;
+      z-index: 200;
+      transition: left 0.25s;
+      box-shadow: var(--shadow);
+    }
+    .sidebar.open { left: 0; }
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 199;
+    }
+    .sidebar-overlay.visible { display: block; }
+    .mobile-menu-btn { display: inline-flex !important; }
+    #chat { padding: 12px; }
+    .composer-wrap { padding: 10px 12px 14px; }
+    .msg-row { max-width: 100%; }
+    .welcome-suggestions { grid-template-columns: 1fr; }
   }
 
-  #btn-send:disabled {
-    opacity: 0.5;
-    cursor: wait;
-  }
-
-  @media (max-width: 780px) {
-    body { overflow: hidden; }
-    .app { height: 100dvh; grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-    .rail { border-right: 0; border-bottom: 1px solid var(--line); }
-    .workspace { min-height: 0; }
-    .topbar { padding: 12px 16px; align-items: flex-start; flex-direction: column; }
-    .top-actions { width: 100%; justify-content: space-between; }
-    #chat { padding: 16px; }
-    .msg, .tool-call, .thinking { width: 100%; }
-    .composer { padding: 12px 16px; grid-template-columns: 1fr; }
-    #btn-send { width: 100%; }
+  @media (min-width: 769px) {
+    .mobile-menu-btn { display: none !important; }
+    .sidebar-overlay { display: none !important; }
   }
 </style>
 </head>
 <body>
+
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
+
 <div class="app">
-  <aside class="rail">
-    <div class="brand">
-      <h1>DeepSeek Agent</h1>
-      <span>Persistent web console for long tool-using runs.</span>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h1><span class="logo">◆</span> DeepSeek Agent</h1>
+      <p>Autonomous coding assistant</p>
     </div>
 
-    <div class="field">
-      <label for="sel-model">Model</label>
-      <select id="sel-model">
-        <option value="expert" selected>Expert</option>
-        <option value="coder">Coder</option>
-        <option value="default">Default</option>
-      </select>
+    <div class="sidebar-section">
+      <h3>Configuration</h3>
+      <div class="field">
+        <label for="sel-model">Model</label>
+        <select id="sel-model">
+          <option value="expert">Expert (DeepSeek V4)</option>
+          <option value="vision">Vision</option>
+          <option value="default">Default</option>
+        </select>
+      </div>
+      <div class="toggle-row">
+        <span>Thinking stream</span>
+        <input type="checkbox" id="chk-thinking" checked>
+      </div>
+      <div class="toggle-row">
+        <span>Auto-collapse thinking</span>
+        <input type="checkbox" id="chk-auto-collapse" checked>
+      </div>
     </div>
 
-    <label class="toggle" for="chk-thinking">
-      <span>Thinking stream</span>
-      <input type="checkbox" id="chk-thinking">
-    </label>
+    <div class="sidebar-section">
+      <h3>Actions</h3>
+      <button class="sidebar-btn" id="btn-clear">🗑 Clear conversation</button>
+      <button class="sidebar-btn" id="btn-export" style="margin-top:8px">📋 Export as Markdown</button>
+      <button class="sidebar-btn" id="btn-search" style="margin-top:8px">🔍 Search conversation</button>
+    </div>
 
-    <button class="ghost" id="btn-clear">Clear conversation</button>
-
-    <div class="metrics">
-      <div class="metric"><span>Turns</span><strong id="hdr-turns">0</strong></div>
-      <div class="metric"><span>Messages</span><strong id="hdr-msgs">0</strong></div>
-      <div class="metric"><span>Model</span><strong id="hdr-model">expert</strong></div>
+    <div class="sidebar-metrics">
+      <div class="metric-row"><span>Turns</span><strong id="hdr-turns">0</strong></div>
+      <div class="metric-row"><span>Messages</span><strong id="hdr-msgs">0</strong></div>
+      <div class="metric-row"><span>Tokens (est)</span><strong class="val-amber" id="hdr-tokens">0</strong></div>
+      <div class="metric-row"><span>Model</span><strong id="hdr-model">expert</strong></div>
     </div>
   </aside>
 
-  <main class="workspace">
+  <main class="main">
     <header class="topbar">
-      <div class="run-title">
-        <strong>Agent run</strong>
-        <span id="status-text">Ready</span>
+      <div class="topbar-left">
+        <button class="icon-btn mobile-menu-btn" id="btn-menu" title="Menu">☰</button>
+        <span class="topbar-status" id="status-text">Ready</span>
+        <div class="conn-pill"><span class="conn-dot" id="conn-dot"></span><span id="conn-label">Connected</span></div>
       </div>
-      <div class="top-actions">
-        <button class="jump" id="btn-bottom" type="button">Bottom</button>
-        <div class="pill"><span class="dot" id="conn-dot"></span><span id="conn-label">Connected</span></div>
+      <div class="topbar-actions">
+        <button class="scroll-btn" id="btn-bottom" type="button">↓ Scroll to bottom</button>
       </div>
     </header>
 
-    <section id="chat" aria-live="polite"></section>
+    <section id="chat" aria-live="polite">
+      <div class="welcome" id="welcome-screen">
+        <div class="welcome-icon">◆</div>
+        <h2>DeepSeek Agent</h2>
+        <p>Send a task and the agent will reason, use tools, and iterate until the job is done.</p>
+        <div class="welcome-suggestions">
+          <button class="suggestion" data-msg="What files are in this project?">📁 Explore project structure</button>
+          <button class="suggestion" data-msg="Run the tests and show me the results">🧪 Run tests</button>
+          <button class="suggestion" data-msg="Find all TODO comments in the codebase">🔍 Find TODOs</button>
+          <button class="suggestion" data-msg="Show me the main entry point and explain the architecture">📖 Explain architecture</button>
+        </div>
+      </div>
+    </section>
 
     <div id="reconnect-banner">
       <span id="reconnect-text">Connection lost. Reconnecting...</span>
       <button id="btn-reconnect">Reconnect</button>
     </div>
 
-    <form class="composer" id="composer">
-      <textarea id="input" placeholder="Send a task to the agent..." autocomplete="off"></textarea>
-      <button id="btn-send" type="submit">Send</button>
+    <form class="composer-wrap" id="composer-form">
+      <div class="composer">
+        <textarea id="input" placeholder="Send a task to the agent..." autocomplete="off"></textarea>
+        <button class="send-btn" id="btn-send" type="submit" title="Send">↑</button>
+      </div>
+      <div class="composer-hints">
+        <span><kbd>Enter</kbd> Send</span>
+        <span><kbd>Shift+Enter</kbd> New line</span>
+        <span><kbd>Esc</kbd> Abort</span>
+        <span><kbd>Ctrl+F</kbd> Search</span>
+      </div>
     </form>
   </main>
 </div>
 
+<div class="search-overlay" id="search-overlay">
+  <input type="text" id="search-input" placeholder="Search messages..." autocomplete="off">
+  <div class="search-results" id="search-results"></div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
 <script>
+// ── DOM refs ──────────────────────────────────
 const chat = document.getElementById("chat");
 const input = document.getElementById("input");
-const composer = document.getElementById("composer");
 const btnSend = document.getElementById("btn-send");
 const btnClear = document.getElementById("btn-clear");
+const btnExport = document.getElementById("btn-export");
+const btnSearch = document.getElementById("btn-search");
 const selModel = document.getElementById("sel-model");
 const chkThinking = document.getElementById("chk-thinking");
+const chkAutoCollapse = document.getElementById("chk-auto-collapse");
 const statusText = document.getElementById("status-text");
 const connDot = document.getElementById("conn-dot");
 const connLabel = document.getElementById("conn-label");
@@ -505,17 +938,28 @@ const btnBottom = document.getElementById("btn-bottom");
 const hdrModel = document.getElementById("hdr-model");
 const hdrTurns = document.getElementById("hdr-turns");
 const hdrMsgs = document.getElementById("hdr-msgs");
+const hdrTokens = document.getElementById("hdr-tokens");
 const reconnectBanner = document.getElementById("reconnect-banner");
 const reconnectText = document.getElementById("reconnect-text");
 const btnReconnect = document.getElementById("btn-reconnect");
+const welcomeScreen = document.getElementById("welcome-screen");
+const searchOverlay = document.getElementById("search-overlay");
+const searchInput = document.getElementById("search-input");
+const searchResults = document.getElementById("search-results");
+const toastContainer = document.getElementById("toast-container");
+const sidebar = document.getElementById("sidebar");
+const sidebarOverlay = document.getElementById("sidebar-overlay");
+const btnMenu = document.getElementById("btn-menu");
+const composerForm = document.getElementById("composer-form");
 
+// ── State ─────────────────────────────────────
 let processing = false;
-let currentAssistantEl = null;
-let currentThinkingEl = null;
-let currentThinkingPre = null;
+let currentAssistantBubble = null;
+let currentThinkingPanel = null;
+let currentThinkingContent = null;
 let toolElements = new Map();
-let toolElementsByKey = new Map();
 let toolCallCounter = 0;
+let toolStartTimes = new Map();
 let connectionState = "connected";
 let reconnectAttempts = 0;
 let reconnectTimer = null;
@@ -524,304 +968,635 @@ let lastPingTime = Date.now();
 let serverConfig = null;
 let pendingMessage = null;
 let autoStick = true;
+let abortController = null;
+let conversationMessages = []; // Track all messages for export
+let totalChars = 0;
 
-const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_BASE_DELAY = 1000;
-const RECONNECT_MAX_DELAY = 30000;
+const DEFAULT_MAX_RECONNECT = 10;
+const RECONNECT_BASE = 1000;
+const RECONNECT_MAX = 30000;
+const MAX_CHAT_CHARS = 2_000_000; // 2MB cap for chat content
 
+// ── Toast notifications ───────────────────────
+function toast(msg, duration = 3000) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = msg;
+  toastContainer.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.3s"; setTimeout(() => el.remove(), 300); }, duration);
+}
+
+// ── Auto-scroll ───────────────────────────────
 function scrollToBottom() {
   chat.scrollTop = chat.scrollHeight;
   autoStick = true;
   btnBottom.classList.remove("visible");
 }
 
-function shouldAutoScroll() {
-  return autoStick || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
+function isNearBottom() {
+  return chat.scrollHeight - chat.scrollTop - chat.clientHeight < 150;
 }
 
-function scrollToBottomIfPinned(wasPinned) {
+function scrollIfPinned(wasPinned) {
   if (wasPinned) scrollToBottom();
 }
 
-function updateScrollState() {
-  const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
-  autoStick = nearBottom;
-  btnBottom.classList.toggle("visible", !nearBottom);
+function updateScrollBtn() {
+  btnBottom.classList.toggle("visible", !isNearBottom());
 }
 
+// ── Chat content capping ──────────────────────
+function capChatContent() {
+  if (totalChars <= MAX_CHAT_CHARS) return;
+  // Remove oldest message rows until under limit
+  const rows = chat.querySelectorAll(".msg-row, .thinking-panel, .tool-card, .sys-msg");
+  while (totalChars > MAX_CHAT_CHARS * 0.7 && rows.length > 10) {
+    const oldest = rows[0];
+    totalChars -= oldest.textContent?.length || 0;
+    oldest.remove();
+    // Shift the array
+    Array.prototype.shift.call(rows);
+  }
+}
+
+// ── Connection state ──────────────────────────
 function setConnectionState(state) {
   connectionState = state;
-  connDot.className = `dot ${state === "connected" ? "" : state}`;
+  connDot.className = `conn-dot ${state === "connected" ? "" : state}`;
   connLabel.textContent = state === "connected" ? "Connected" : state === "reconnecting" ? "Reconnecting" : "Disconnected";
   reconnectBanner.classList.toggle("visible", state !== "connected");
 }
 
-function setStatus(message) {
-  statusText.textContent = message;
+function setStatus(msg) { statusText.textContent = msg; }
+
+function formatTime() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function setProcessing(next) {
-  processing = next;
-  btnSend.disabled = next;
-  btnSend.textContent = next ? "Running" : "Send";
+function estimateTokens(str) { return Math.ceil((str || "").length / 4); }
+
+function updateHeader(turns, messages, tokens) {
+  hdrTurns.textContent = String(turns);
+  hdrMsgs.textContent = String(messages);
+  if (tokens !== undefined) hdrTokens.textContent = String(tokens);
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+// ── Markdown renderer ──────────────────────────
+function highlightCode(code, lang) {
+  // Lightweight syntax highlighter
+  let html = escapeHtml(code);
+
+  // Comments
+  html = html.replace(/(\/\/.*$|#.*$)/gm, '<span class="hl-comment">$1</span>');
+  html = html.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="hl-comment">$1</span>');
+
+  // Strings
+  html = html.replace(/(&quot;|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, '<span class="hl-string">$1</span>');
+
+  // Numbers
+  html = html.replace(/\b(\d+\.?\d*)\b/g, '<span class="hl-number">$1</span>');
+
+  // Keywords
+  const keywords = ['const','let','var','function','async','await','return','if','else','for','while','class','import','export','from','default','try','catch','finally','throw','new','typeof','instanceof','switch','case','break','continue','yield','of','in','do','void','null','undefined','true','false','this','super','extends','implements','interface','type','enum','namespace','module','declare','as','readonly','keyof','partial','required','pick','omit','record','public','private','protected','static','abstract','override','fn','let','mut','pub','use','mod','impl','trait','struct','match','loop','ref','move','where','crate','self','Self','Option','Result','Some','None','Ok','Err','Vec','String','def','elif','with','except','raise','lambda','pass','del','global','nonlocal','assert','is','not','and','or','None','True','False','print','range','len','str','int','float','list','dict','set','tuple','require','module','exports','end','then','local','nil','do','begin','rescue','ensure','when','unless','until','elsif','redo','retry','yield','self','BEGIN','END','func','go','chan','defer','select','map','package','type','var','const','interface','struct','range'];
+  const kwRegex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'g');
+  html = html.replace(kwRegex, '<span class="hl-keyword">$1</span>');
+
+  // Function calls
+  html = html.replace(/\b([a-zA-Z_]\w*)\s*(?=\()/g, '<span class="hl-function">$1</span>');
+
+  return html;
 }
 
-function addMsg(role, text, cls = "") {
-  const wasPinned = shouldAutoScroll();
-  const div = document.createElement("div");
-  div.className = `msg ${role} ${cls}`.trim();
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+
+  // Extract code blocks first to protect them from markdown processing
+  const codeBlocks = [];
+  let processed = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push({ lang: lang || 'text', code: code.replace(/^\n|\n$/g, '') });
+    return `%%CODEBLOCK_${idx}%%`;
+  });
+
+  // Extract inline code
+  const inlineCodes = [];
+  processed = processed.replace(/`([^`]+)`/g, (_, code) => {
+    const idx = inlineCodes.length;
+    inlineCodes.push(code);
+    return `%%INLINECODE_${idx}%%`;
+  });
+
+  // Escape HTML
+  processed = escapeHtml(processed);
+
+  // Restore inline code
+  processed = processed.replace(/%%INLINECODE_(\d+)%%/g, (_, idx) => {
+    return `<code>${escapeHtml(inlineCodes[parseInt(idx)])}</code>`;
+  });
+
+  // Headers
+  processed = processed.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  processed = processed.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  processed = processed.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  processed = processed.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold & italic
+  processed = processed.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  processed = processed.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  processed = processed.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  processed = processed.replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // Links
+  processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // Horizontal rule
+  processed = processed.replace(/^---$/gm, '<hr>');
+
+  // Blockquotes
+  processed = processed.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Tables
+  processed = processed.replace(/^\|(.+)\|$/gm, (match) => {
+    const cells = match.split('|').filter(c => c.trim());
+    if (cells.every(c => /^[\s-:]+$/.test(c))) return '<!--table-sep-->';
+    return '<tr>' + cells.map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+  });
+  processed = processed.replace(/((?:<tr>.*<\/tr>\n?<!--table-sep-->\n?(?:<tr>.*<\/tr>\n?)+))/g, (match) => {
+    const lines = match.split('\n').filter(l => l.trim());
+    let html = '<table>';
+    let isHeader = true;
+    for (const line of lines) {
+      if (line === '<!--table-sep-->') { isHeader = false; continue; }
+      const row = line.replace(/<td>/g, isHeader ? '<th>' : '<td>').replace(/<\/td>/g, isHeader ? '</th>' : '</td>');
+      html += row;
+    }
+    html += '</table>';
+    return html;
+  });
+
+  // Lists
+  processed = processed.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+  processed = processed.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  processed = processed.replace(/^(?:\d+\. (.+))$/gm, '<li>$1</li>');
+
+  // Paragraphs
+  processed = processed.replace(/^(?!<[hulotbh]|%%CODEBLOCK)(.+)$/gm, '<p>$1</p>');
+
+  // Restore code blocks
+  processed = processed.replace(/%%CODEBLOCK_(\d+)%%/g, (_, idx) => {
+    const { lang, code } = codeBlocks[parseInt(idx)];
+    const highlighted = highlightCode(code, lang);
+    return `<div class="code-block"><div class="code-block-header"><span class="lang">${escapeHtml(lang)}</span><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div><pre>${highlighted}</pre></div>`;
+  });
+
+  // Clean up empty paragraphs
+  processed = processed.replace(/<p>\s*<\/p>/g, '');
+
+  return `<div class="md">${processed}</div>`;
+}
+
+// ── Copy code block ───────────────────────────
+function copyCode(btn) {
+  const pre = btn.closest('.code-block')?.querySelector('pre');
+  if (!pre) return;
+  const text = pre.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    btn.textContent = '✓ Copied';
+    setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '📋 Copy'; }, 2000);
+  }).catch(() => toast('Failed to copy'));
+}
+
+// ── Copy message ──────────────────────────────
+function copyMessage(btn) {
+  const bubble = btn.closest('.msg-body')?.querySelector('.msg-bubble');
+  if (!bubble) return;
+  const text = bubble.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
+    toast('Copied to clipboard');
+  }).catch(() => toast('Failed to copy'));
+}
+
+// ── Message creation ──────────────────────────
+function hideWelcome() {
+  if (welcomeScreen) welcomeScreen.style.display = 'none';
+}
+
+function addMessageRow(role, content = '', extraClass = '') {
+  hideWelcome();
+  const wasPinned = isNearBottom();
+
+  const row = document.createElement('div');
+  row.className = `msg-row ${role}`;
+
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = role === 'user' ? '👤' : '◆';
+
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+
+  const bubble = document.createElement('div');
+  bubble.className = `msg-bubble ${extraClass}`.trim();
+
+  if (role === 'user') {
+    bubble.innerHTML = renderMarkdown(content);
+  } else {
+    bubble.textContent = content;
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'msg-action-btn';
+  copyBtn.textContent = '📋 Copy';
+  copyBtn.onclick = () => copyMessage(copyBtn);
+  actions.appendChild(copyBtn);
+
+  if (role === 'user') {
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'msg-action-btn';
+    retryBtn.textContent = '↻ Retry';
+    retryBtn.onclick = () => {
+      if (!processing && content.trim()) {
+        input.value = content.trim();
+        sendMessage();
+      }
+    };
+    actions.appendChild(retryBtn);
+  }
+
+  const time = document.createElement('div');
+  time.className = 'msg-time';
+  time.textContent = formatTime();
+
+  body.append(bubble, actions, time);
+  row.append(avatar, body);
+  chat.appendChild(row);
+
+  totalChars += content.length;
+  capChatContent();
+
+  scrollIfPinned(wasPinned);
+  conversationMessages.push({ role, content, time: new Date() });
+  return { row, bubble, body };
+}
+
+function addSystemMessage(text, type = 'info') {
+  const wasPinned = isNearBottom();
+  const div = document.createElement('div');
+  div.className = `sys-msg ${type}`;
   div.textContent = text;
   chat.appendChild(div);
-  scrollToBottomIfPinned(wasPinned);
+  scrollIfPinned(wasPinned);
   return div;
 }
 
-function removeIfEmpty(el) {
-  if (el && !el.textContent.trim()) el.remove();
-}
-
-function updateHeader(turns, messages) {
-  hdrTurns.textContent = String(turns);
-  hdrMsgs.textContent = String(messages);
-  hdrModel.textContent = selModel.value;
-}
-
+// ── Thinking panel ────────────────────────────
 function createThinkingPanel() {
-  if (currentThinkingEl) return;
-  const wasPinned = shouldAutoScroll();
-  const details = document.createElement("details");
-  details.className = "thinking";
-  details.open = true;
-  const summary = document.createElement("summary");
-  summary.textContent = "Thinking";
-  const pre = document.createElement("pre");
-  details.append(summary, pre);
-  chat.appendChild(details);
-  currentThinkingEl = details;
-  currentThinkingPre = pre;
-  scrollToBottomIfPinned(wasPinned);
+  if (currentThinkingPanel) return;
+  hideWelcome();
+  const wasPinned = isNearBottom();
+
+  const panel = document.createElement('div');
+  panel.className = 'thinking-panel';
+
+  const header = document.createElement('div');
+  header.className = 'thinking-header';
+  header.innerHTML = '<span class="arrow">▼</span> <span>💭 Thinking</span> <span class="think-chars">(0 chars)</span>';
+  header.onclick = () => panel.classList.toggle('collapsed');
+
+  const content = document.createElement('div');
+  content.className = 'thinking-content';
+
+  panel.append(header, content);
+  chat.appendChild(panel);
+
+  currentThinkingPanel = panel;
+  currentThinkingContent = content;
+  scrollIfPinned(wasPinned);
 }
 
 function appendThinking(delta) {
   createThinkingPanel();
-  const wasPinned = shouldAutoScroll();
-  currentThinkingPre.textContent += delta;
-  scrollToBottomIfPinned(wasPinned);
+  const wasPinned = isNearBottom();
+  currentThinkingContent.textContent += delta;
+  const chars = currentThinkingContent.textContent.length;
+  const charsSpan = currentThinkingPanel.querySelector('.think-chars');
+  if (charsSpan) charsSpan.textContent = `(${chars.toLocaleString()} chars)`;
+  scrollIfPinned(wasPinned);
 }
 
-function toolKey(name, args) {
-  return `${name}:${JSON.stringify(args).slice(0, 200)}`;
+function finalizeThinking() {
+  if (!currentThinkingPanel) return;
+  if (chkAutoCollapse.checked && currentThinkingPanel.textContent.length > 200) {
+    currentThinkingPanel.classList.add('collapsed');
+  }
+  currentThinkingPanel = null;
+  currentThinkingContent = null;
 }
 
-function createOrUpdateToolCall(name, args, toolCallId, phase = "detected", key = null) {
-  const normalizedKey = key || toolKey(name, args);
-  const existing = toolElements.get(toolCallId) || toolElementsByKey.get(normalizedKey);
+// ── Tool cards ────────────────────────────────
+function createToolCard(name, args, toolCallId, phase = 'detected') {
+  const existing = toolElements.get(toolCallId);
   if (existing) {
-    existing.dataset.toolCallId = toolCallId;
-    existing.dataset.toolKey = normalizedKey;
-    existing.className = `tool-call ${phase}`;
-    existing.querySelector(".tool-phase").textContent = phase;
-    toolElements.set(toolCallId, existing);
-    toolElementsByKey.set(normalizedKey, existing);
+    existing.className = `tool-card ${phase}`;
+    const dot = existing.querySelector('.tool-status-dot');
+    if (dot) dot.className = 'tool-status-dot';
+    const phaseLabel = existing.querySelector('.tool-name');
+    if (phaseLabel) phaseLabel.textContent = name;
+    if (phase === 'running') toolStartTimes.set(toolCallId, Date.now());
     return existing;
   }
 
-  const wasPinned = shouldAutoScroll();
-  const div = document.createElement("div");
-  div.className = `tool-call ${phase}`;
-  div.dataset.toolCallId = toolCallId;
-  div.dataset.toolKey = normalizedKey;
+  hideWelcome();
+  const wasPinned = isNearBottom();
 
-  const argsStr = typeof args === "object" ? JSON.stringify(args, null, 2) : String(args);
-  const argsPreview = typeof args === "object" ? JSON.stringify(args).slice(0, 120) : String(args).slice(0, 120);
+  const card = document.createElement('div');
+  card.className = `tool-card ${phase}`;
+  card.dataset.toolCallId = toolCallId;
 
-  const header = document.createElement("button");
-  header.type = "button";
-  header.className = "tool-header";
-  header.innerHTML = `<span class="tool-toggle">+</span><span class="tool-name">${escapeHtml(name)}</span><span class="tool-args">${escapeHtml(argsPreview)}</span><span class="tool-phase">${phase}</span>`;
+  const header = document.createElement('div');
+  header.className = 'tool-card-header';
+  header.onclick = () => card.classList.toggle('expanded');
 
-  const body = document.createElement("div");
-  body.className = "tool-body";
-  body.innerHTML = `<pre>${escapeHtml(argsStr)}</pre><div class="tool-result"></div><div class="tool-status"></div>`;
+  const argsStr = JSON.stringify(args).slice(0, 150);
 
-  header.addEventListener("click", () => {
-    body.classList.toggle("open");
-    header.querySelector(".tool-toggle").textContent = body.classList.contains("open") ? "-" : "+";
-  });
+  header.innerHTML = `
+    <span class="tool-status-dot"></span>
+    <span class="tool-name">${escapeHtml(name)}</span>
+    <span class="tool-args">${escapeHtml(argsStr)}</span>
+    <span class="tool-duration"></span>
+    <span class="tool-arrow">▼</span>
+  `;
 
-  div.append(header, body);
-  chat.appendChild(div);
-  toolElements.set(toolCallId, div);
-  toolElementsByKey.set(normalizedKey, div);
-  scrollToBottomIfPinned(wasPinned);
-  return div;
+  const result = document.createElement('div');
+  result.className = 'tool-result';
+
+  card.append(header, result);
+  chat.appendChild(card);
+
+  toolElements.set(toolCallId, card);
+  if (phase === 'running') {
+    toolStartTimes.set(toolCallId, Date.now());
+    card.classList.add('expanded');
+  }
+
+  scrollIfPinned(wasPinned);
+  return card;
 }
 
 function updateToolResult(toolCallId, content, isError) {
-  const el = toolElements.get(toolCallId);
-  if (!el) return;
-  const wasPinned = shouldAutoScroll();
-  const body = el.querySelector(".tool-body");
-  const status = el.querySelector(".tool-status");
-  const result = el.querySelector(".tool-result");
-  const safeContent = content.length > 2400 ? `${content.slice(0, 2400)}\n... (${content.length} chars total)` : content;
-  el.className = `tool-call ${isError ? "failed" : "done"}`;
-  el.querySelector(".tool-phase").textContent = isError ? "failed" : "done";
-  status.className = `tool-status ${isError ? "err" : "ok"}`;
-  status.textContent = `${isError ? "Error" : "OK"} - ${content.length} chars`;
-  result.innerHTML = `<pre>${escapeHtml(safeContent)}</pre>`;
-  if (isError) body.classList.add("open");
-  scrollToBottomIfPinned(wasPinned);
-}
+  const card = toolElements.get(toolCallId);
+  if (!card) return;
 
-async function fetchServerConfig() {
-  try {
-    const resp = await fetch("/api/connection-info");
-    if (resp.ok) serverConfig = await resp.json();
-  } catch {}
-}
+  const startTime = toolStartTimes.get(toolCallId);
+  const duration = startTime ? `${((Date.now() - startTime) / 1000).toFixed(1)}s` : '';
+  const durEl = card.querySelector('.tool-duration');
+  if (durEl) durEl.textContent = duration;
 
-async function applySettings() {
-  hdrModel.textContent = selModel.value;
-  try {
-    await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modelType: selModel.value, thinkingEnabled: chkThinking.checked }),
-    });
-  } catch (err) {
-    addMsg("warning", `Settings not applied: ${err.message}`);
+  card.className = `tool-card ${isError ? 'error' : 'success'}`;
+
+  const resultDiv = card.querySelector('.tool-result');
+  if (resultDiv) {
+    const maxLen = 10000;
+    const display = content.length > maxLen ? content.slice(0, maxLen) + `\n... (${content.length - maxLen} more chars)` : content;
+    resultDiv.textContent = display;
   }
 }
 
-async function healthCheck() {
-  try {
-    const resp = await fetch("/api/health");
-    if (!resp.ok) return false;
-    if (connectionState !== "connected") {
-      setConnectionState("connected");
-      setStatus("Reconnected");
-      reconnectAttempts = 0;
-      if (pendingMessage && !processing) {
-        const retry = pendingMessage;
-        pendingMessage = null;
-        addMsg("info", "Connection restored. Retrying the interrupted message.");
-        await sendMessageInternal(retry, { echoUser: false });
+// ── SSE parsing ───────────────────────────────
+function parseSseBlock(block) {
+  const lines = block.split('\n');
+  let eventType = 'message';
+  const dataLines = [];
+  for (const line of lines) {
+    if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+    if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+  }
+  if (dataLines.length === 0) return null;
+  return { eventType, dataStr: dataLines.join('\n') };
+}
+
+function handleEvent(type, data) {
+  switch (type) {
+    case 'text_delta':
+      if (currentAssistantBubble) {
+        const wasPinned = isNearBottom();
+        const current = currentAssistantBubble.textContent || '';
+        currentAssistantBubble.textContent = current + (data.delta || '');
+        scrollIfPinned(wasPinned);
       }
-    }
-    return true;
-  } catch {
-    return false;
+      break;
+    case 'thinking_delta':
+      appendThinking(data.delta || '');
+      break;
+    case 'stream_end':
+      if (currentAssistantBubble) {
+        if (data.fullText) currentAssistantBubble.textContent = data.fullText;
+        currentAssistantBubble.classList.remove('streaming');
+        // Render markdown in assistant message
+        const text = currentAssistantBubble.textContent || '';
+        if (text) currentAssistantBubble.innerHTML = renderMarkdown(text);
+      }
+      finalizeThinking();
+      break;
+    case 'tool_call_detected':
+      createToolCard(data.name, data.args, data.toolCallId || `tc_${++toolCallCounter}`, 'detected');
+      setStatus(`Detected ${data.name}`);
+      break;
+    case 'tool_call_start':
+      createToolCard(data.name, data.args, data.toolCallId || `tc_${++toolCallCounter}`, 'running');
+      setStatus(`Executing ${data.name}`);
+      break;
+    case 'tool_result':
+      updateToolResult(data.toolCallId || `tc_${toolCallCounter}`, data.content || '', data.isError);
+      break;
+    case 'tool_batch_start':
+      setStatus(`Running ${data.count} tools...`);
+      break;
+    case 'tool_batch_end':
+      setStatus(`${data.count} tools complete`);
+      break;
+    case 'round_complete':
+      if (!data.hasToolCalls) finalizeThinking();
+      setStatus(data.hasToolCalls ? `Round ${data.round} complete` : 'Generating answer');
+      break;
+    case 'turn_complete':
+      updateHeader(data.turns || 0, data.messages?.length || 0, data.estimatedTokens);
+      if (currentAssistantBubble) {
+        currentAssistantBubble.classList.remove('streaming');
+        const text = currentAssistantBubble.textContent || '';
+        if (text) currentAssistantBubble.innerHTML = renderMarkdown(text);
+      }
+      finalizeThinking();
+      break;
+    case 'warning':
+      addSystemMessage(`⚠ ${data.message}`, 'warning');
+      break;
+    case 'error':
+      addSystemMessage(`✗ ${data.message}`, 'error');
+      if (currentAssistantBubble) currentAssistantBubble.classList.remove('streaming');
+      break;
+    case 'status':
+      setStatus(data.message);
+      break;
+    case 'ping':
+      lastPingTime = Date.now();
+      break;
+    case 'timeout':
+      addSystemMessage(`Timeout: ${data.message}`, 'error');
+      break;
+    case 'network_error':
+      addSystemMessage(`Network: ${data.message}`, 'warning');
+      break;
+    case 'done':
+      if (currentAssistantBubble) {
+        currentAssistantBubble.classList.remove('streaming');
+        const text = currentAssistantBubble.textContent || '';
+        if (text) currentAssistantBubble.innerHTML = renderMarkdown(text);
+      }
+      finalizeThinking();
+      break;
+    case 'idle_timeout':
+      addSystemMessage(data.message, 'info');
+      break;
+    default:
+      console.debug('Unhandled event:', type, data);
   }
 }
 
-function startHealthCheck() {
-  if (healthCheckTimer) clearInterval(healthCheckTimer);
-  healthCheckTimer = setInterval(() => {
-    if (connectionState !== "connected") healthCheck();
-  }, 5000);
-}
-
-function scheduleReconnect() {
-  const maxAttempts = serverConfig?.maxReconnectAttempts || DEFAULT_MAX_RECONNECT_ATTEMPTS;
-  if (reconnectAttempts >= maxAttempts) {
-    setConnectionState("disconnected");
-    setStatus("Connection lost. Manual reconnect required.");
-    reconnectText.textContent = "Connection lost. Manual reconnect required.";
-    return;
-  }
-
-  reconnectAttempts += 1;
-  const delay = Math.min(RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts - 1), RECONNECT_MAX_DELAY);
-  const jitteredDelay = Math.round(delay * (0.5 + Math.random() * 0.5));
-  setConnectionState("reconnecting");
-  setStatus(`Reconnect attempt ${reconnectAttempts}/${maxAttempts}`);
-  reconnectText.textContent = `Connection lost. Retrying in ${Math.max(1, Math.round(jitteredDelay / 1000))}s.`;
-
-  reconnectTimer = setTimeout(async () => {
-    if (!(await healthCheck())) scheduleReconnect();
-  }, jitteredDelay);
-}
-
+// ── Network & reconnection ────────────────────
 function handleDisconnect() {
-  if (connectionState !== "connected") return;
-  setConnectionState("disconnected");
-  setStatus("Connection lost");
+  if (connectionState !== 'connected') return;
+  setConnectionState('disconnected');
+  setStatus('Connection lost');
   scheduleReconnect();
   startHealthCheck();
 }
 
-function parseSseBlock(block) {
-  const lines = block.split("\n");
-  let eventType = "message";
-  const dataLines = [];
-
-  for (const line of lines) {
-    if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-    if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+function scheduleReconnect() {
+  const maxAttempts = serverConfig?.maxReconnectAttempts || DEFAULT_MAX_RECONNECT;
+  if (reconnectAttempts >= maxAttempts) {
+    setConnectionState('disconnected');
+    reconnectText.textContent = 'Max reconnection attempts reached. Please refresh.';
+    return;
   }
-
-  if (dataLines.length === 0) return null;
-  return { eventType, dataStr: dataLines.join("\n") };
+  setConnectionState('reconnecting');
+  reconnectAttempts++;
+  const delay = Math.min(RECONNECT_BASE * Math.pow(2, reconnectAttempts - 1), RECONNECT_MAX);
+  const jittered = delay * (0.5 + Math.random() * 0.5);
+  reconnectText.textContent = `Reconnecting in ${Math.round(jittered / 1000)}s... (attempt ${reconnectAttempts})`;
+  reconnectTimer = setTimeout(async () => {
+    const ok = await healthCheck();
+    if (!ok) scheduleReconnect();
+  }, jittered);
 }
 
+async function healthCheck() {
+  try {
+    const resp = await fetch('/api/health', { signal: AbortSignal.timeout(5000) });
+    if (resp.ok) {
+      reconnectAttempts = 0;
+      setConnectionState('connected');
+      setStatus('Connected');
+      if (pendingMessage) {
+        const msg = pendingMessage;
+        pendingMessage = null;
+        sendMessageInternal(msg, { echoUser: false });
+      }
+      return true;
+    }
+  } catch {}
+  handleDisconnect();
+  return false;
+}
+
+function startHealthCheck() {
+  if (healthCheckTimer) clearInterval(healthCheckTimer);
+  healthCheckTimer = setInterval(healthCheck, serverConfig?.heartbeatIntervalMs || 30000);
+}
+
+async function fetchServerConfig() {
+  try {
+    const resp = await fetch('/api/connection-info');
+    if (resp.ok) serverConfig = await resp.json();
+  } catch {}
+}
+
+// ── Settings ──────────────────────────────────
+async function applySettings() {
+  hdrModel.textContent = selModel.value;
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelType: selModel.value, thinkingEnabled: chkThinking.checked }),
+    });
+  } catch {}
+}
+
+// ── Message sending ───────────────────────────
 async function sendMessageInternal(text, options = {}) {
   const { echoUser = true } = options;
-  currentAssistantEl = null;
-  currentThinkingEl = null;
-  currentThinkingPre = null;
-  toolElements.clear();
-  toolElementsByKey.clear();
-  toolCallCounter = 0;
 
-  if (echoUser) addMsg("user", text);
-  input.value = "";
-  currentAssistantEl = addMsg("assistant", "", "cursor");
-  setStatus("Starting stream...");
+  currentAssistantBubble = null;
+  currentThinkingPanel = null;
+  currentThinkingContent = null;
+  toolElements.clear();
+  toolCallCounter = 0;
+  toolStartTimes.clear();
+
+  if (echoUser) addMessageRow('user', text);
+
+  const { bubble } = addMessageRow('assistant', '', 'streaming');
+  currentAssistantBubble = bubble;
+
+  input.value = '';
+  autoResizeInput();
+  setStatus('Starting stream...');
+
+  abortController = new AbortController();
 
   try {
-    const controller = new AbortController();
     const timeoutMs = serverConfig?.requestTimeoutMs || 3600000;
-    const timeoutTimer = setTimeout(() => controller.abort(), timeoutMs + 5000);
+    const timeoutTimer = setTimeout(() => abortController.abort(), timeoutMs + 5000);
 
-    const resp = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, modelType: selModel.value, thinkingEnabled: chkThinking.checked }),
-      signal: controller.signal,
+      signal: abortController.signal,
     });
 
     clearTimeout(timeoutTimer);
+
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
-      try {
-        const json = await resp.json();
-        if (json.error) detail = json.error;
-      } catch {}
+      try { const json = await resp.json(); if (json.error) detail = json.error; } catch {}
       throw new Error(detail);
     }
 
     reconnectAttempts = 0;
-    setConnectionState("connected");
+    setConnectionState('connected');
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
+    let buffer = '';
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split("\n\n");
-      buffer = blocks.pop() || "";
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() || '';
 
       for (const block of blocks) {
         if (!block.trim()) continue;
@@ -830,27 +1605,34 @@ async function sendMessageInternal(text, options = {}) {
         try {
           handleEvent(parsed.eventType, JSON.parse(parsed.dataStr));
         } catch (err) {
-          console.warn("[SSE] Bad event", parsed, err);
+          console.warn('[SSE] Bad event', parsed, err);
         }
       }
     }
   } catch (err) {
-    removeIfEmpty(currentAssistantEl);
-    if (err.name === "AbortError") {
-      addMsg("error", "Request timed out. The server may still be processing.");
-    } else if (err.message.includes("fetch") || err.message.includes("NetworkError") || err.message.includes("Failed to fetch")) {
-      addMsg("error", `Connection error: ${err.message}`);
+    if (err.name === 'AbortError') {
+      addSystemMessage('Run aborted by user.', 'info');
+    } else if (err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed to fetch')) {
+      addSystemMessage(`Connection error: ${err.message}`, 'error');
       pendingMessage = text;
       handleDisconnect();
     } else {
-      addMsg("error", `Error: ${err.message}`);
+      addSystemMessage(`Error: ${err.message}`, 'error');
     }
+    if (currentAssistantBubble) currentAssistantBubble.classList.remove('streaming');
   } finally {
-    if (currentAssistantEl) currentAssistantEl.classList.remove("cursor");
+    finalizeThinking();
     setProcessing(false);
-    if (connectionState === "connected") setStatus("Ready");
+    if (connectionState === 'connected') setStatus('Ready');
+    abortController = null;
     input.focus();
   }
+}
+
+function setProcessing(val) {
+  processing = val;
+  input.disabled = val;
+  btnSend.disabled = val;
 }
 
 async function sendMessage() {
@@ -860,152 +1642,219 @@ async function sendMessage() {
   await sendMessageInternal(text);
 }
 
-function handleEvent(type, data) {
-  switch (type) {
-    case "text_delta":
-      if (currentAssistantEl) {
-        const wasPinned = shouldAutoScroll();
-        currentAssistantEl.textContent += data.delta;
-        scrollToBottomIfPinned(wasPinned);
-      }
-      break;
-    case "thinking_delta":
-      appendThinking(data.delta || "");
-      break;
-    case "stream_end":
-      if (currentAssistantEl) {
-        currentAssistantEl.textContent = data.fullText || currentAssistantEl.textContent;
-        currentAssistantEl.classList.remove("cursor");
-      }
-      break;
-    case "tool_call_detected":
-      createOrUpdateToolCall(data.name, data.args, data.toolCallId || `tc_${++toolCallCounter}`, "detected", data.toolKey);
-      setStatus(`Detected ${data.name}`);
-      break;
-    case "tool_call_start":
-      createOrUpdateToolCall(data.name, data.args, data.toolCallId || `tc_${++toolCallCounter}`, "running", data.toolKey);
-      setStatus(`Executing ${data.name}`);
-      break;
-    case "tool_result":
-      updateToolResult(data.toolCallId || `tc_${toolCallCounter}`, data.content || "", data.isError);
-      break;
-    case "round_complete":
-      setStatus(data.hasToolCalls ? `Round ${data.round} complete, continuing` : "Final answer complete");
-      break;
-    case "turn_complete":
-      updateHeader(data.turns || 0, data.messages?.length || 0);
-      if (currentAssistantEl) currentAssistantEl.classList.remove("cursor");
-      break;
-    case "warning":
-      addMsg("warning", data.message);
-      break;
-    case "error":
-      addMsg("error", data.message);
-      break;
-    case "network_error":
-      addMsg("error", data.message);
-      handleDisconnect();
-      break;
-    case "timeout":
-      addMsg("warning", data.message);
-      break;
-    case "idle_timeout":
-      addMsg("info", `Server idle timeout reached after ${Math.round(data.timeoutMs / 1000)}s.`);
-      handleDisconnect();
-      break;
-    case "ping":
-      lastPingTime = Date.now();
-      if (connectionState !== "connected") {
-        setConnectionState("connected");
-        setStatus("Reconnected");
-      }
-      break;
-    case "done":
-      setStatus("Ready");
-      break;
-    case "status":
-      setStatus(data.message);
-      break;
+// ── Auto-resize textarea ──────────────────────
+function autoResizeInput() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+}
+
+input.addEventListener('input', autoResizeInput);
+
+// ── Clear ─────────────────────────────────────
+async function clearConversation() {
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  chat.innerHTML = '';
+  if (welcomeScreen) chat.appendChild(welcomeScreen);
+  welcomeScreen.style.display = '';
+  toolElements.clear();
+  toolStartTimes.clear();
+  currentAssistantBubble = null;
+  currentThinkingPanel = null;
+  currentThinkingContent = null;
+  pendingMessage = null;
+  conversationMessages = [];
+  totalChars = 0;
+  setProcessing(false);
+  try {
+    await fetch('/api/clear', { method: 'POST' });
+    updateHeader(0, 0, 0);
+    setStatus('Conversation cleared');
+    toast('Conversation cleared');
+  } catch (err) {
+    addSystemMessage(`Failed to clear: ${err.message}`, 'error');
+  }
+  input.focus();
+}
+
+// ── Export conversation ───────────────────────
+function exportMarkdown() {
+  if (conversationMessages.length === 0) {
+    toast('No messages to export');
+    return;
+  }
+  let md = '# DeepSeek Agent Conversation\n\n';
+  md += `Exported: ${new Date().toISOString()}\n\n---\n\n`;
+  for (const msg of conversationMessages) {
+    const role = msg.role === 'user' ? '👤 User' : '◆ Assistant';
+    md += `## ${role} (${msg.time.toLocaleTimeString()})\n\n`;
+    md += msg.content + '\n\n---\n\n';
+  }
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `deepseek-chat-${new Date().toISOString().slice(0, 10)}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Exported as Markdown');
+}
+
+// ── Search ────────────────────────────────────
+function openSearch() {
+  searchOverlay.classList.add('visible');
+  searchInput.value = '';
+  searchResults.innerHTML = '';
+  searchInput.focus();
+}
+
+function closeSearch() {
+  searchOverlay.classList.remove('visible');
+}
+
+function performSearch(query) {
+  searchResults.innerHTML = '';
+  if (!query || query.length < 2) return;
+
+  const lowerQuery = query.toLowerCase();
+  const hits = [];
+
+  const allBubbles = chat.querySelectorAll('.msg-bubble, .thinking-content, .tool-result');
+  allBubbles.forEach((el, i) => {
+    const text = el.textContent || '';
+    const idx = text.toLowerCase().indexOf(lowerQuery);
+    if (idx !== -1) {
+      const start = Math.max(0, idx - 40);
+      const end = Math.min(text.length, idx + query.length + 40);
+      const snippet = (start > 0 ? '...' : '') + text.slice(start, end) + (end < text.length ? '...' : '');
+      hits.push({ el, snippet, idx: i });
+    }
+  });
+
+  if (hits.length === 0) {
+    searchResults.innerHTML = '<div style="padding:8px;color:var(--text-3)">No matches found</div>';
+    return;
+  }
+
+  searchResults.innerHTML = `<div style="padding:4px 8px;color:var(--text-3)">${hits.length} match${hits.length > 1 ? 'es' : ''}</div>`;
+
+  for (const hit of hits.slice(0, 20)) {
+    const div = document.createElement('div');
+    div.className = 'search-hit';
+    const highlighted = hit.snippet.replace(new RegExp(escapeRegex(query), 'gi'), m => `<mark>${m}</mark>`);
+    div.innerHTML = highlighted;
+    div.onclick = () => {
+      hit.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      hit.el.style.outline = '2px solid var(--accent)';
+      setTimeout(() => { hit.el.style.outline = ''; }, 2000);
+      closeSearch();
+    };
+    searchResults.appendChild(div);
   }
 }
 
-function startStaleDetection() {
-  setInterval(() => {
-    if (!processing || connectionState !== "connected") return;
-    const staleThreshold = (serverConfig?.heartbeatIntervalMs || 30000) * 3;
-    if (Date.now() - lastPingTime > staleThreshold) handleDisconnect();
-  }, 10000);
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-composer.addEventListener("submit", (event) => {
-  event.preventDefault();
+// ── Sidebar (mobile) ──────────────────────────
+function toggleSidebar() {
+  sidebar.classList.toggle('open');
+  sidebarOverlay.classList.toggle('visible');
+}
+
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  sidebarOverlay.classList.remove('visible');
+}
+
+// ── Event listeners ───────────────────────────
+composerForm.addEventListener("submit", (e) => {
+  e.preventDefault();
   sendMessage();
 });
 
-input.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
+btnSend.addEventListener("click", (e) => {
+  e.preventDefault();
+  sendMessage();
+});
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (searchOverlay.classList.contains('visible')) {
+      closeSearch();
+      return;
+    }
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+      setStatus('Aborting...');
+    }
+    return;
+  }
+  if (e.key === 'Enter' && !e.shiftKey && !processing) {
+    e.preventDefault();
     sendMessage();
   }
 });
 
-chat.addEventListener("scroll", updateScrollState, { passive: true });
-
-chat.addEventListener("wheel", (event) => {
-  if (event.deltaY < 0) autoStick = false;
-}, { passive: true });
-
-window.addEventListener("wheel", (event) => {
-  const target = event.target;
-  if (target.closest?.("#chat, textarea, select, button, pre")) return;
-  if (chat.scrollHeight <= chat.clientHeight) return;
-  event.preventDefault();
-  autoStick = event.deltaY > 0 && chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
-  chat.scrollBy({ top: event.deltaY, behavior: "auto" });
-  updateScrollState();
-}, { passive: false });
-
-btnBottom.addEventListener("click", scrollToBottom);
-
-btnClear.addEventListener("click", async () => {
-  chat.innerHTML = "";
-  toolElements.clear();
-  toolElementsByKey.clear();
-  currentAssistantEl = null;
-  currentThinkingEl = null;
-  currentThinkingPre = null;
-  pendingMessage = null;
-  try {
-    await fetch("/api/clear", { method: "POST" });
-    updateHeader(0, 0);
-    setStatus("Conversation cleared");
-  } catch (err) {
-    addMsg("error", `Failed to clear: ${err.message}`);
+// Ctrl+F search
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    openSearch();
   }
 });
 
-selModel.addEventListener("change", applySettings);
-chkThinking.addEventListener("change", applySettings);
+searchInput.addEventListener('input', (e) => performSearch(e.target.value));
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSearch();
+});
 
-btnReconnect.addEventListener("click", async () => {
+chat.addEventListener('scroll', () => {
+  autoStick = isNearBottom();
+  updateScrollBtn();
+}, { passive: true });
+
+btnBottom.addEventListener('click', scrollToBottom);
+btnClear.addEventListener('click', clearConversation);
+btnExport.addEventListener('click', exportMarkdown);
+btnSearch.addEventListener('click', openSearch);
+btnMenu.addEventListener('click', toggleSidebar);
+sidebarOverlay.addEventListener('click', closeSidebar);
+
+btnReconnect.addEventListener('click', async () => {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectAttempts = 0;
-  setConnectionState("reconnecting");
-  setStatus("Reconnecting...");
+  setConnectionState('reconnecting');
+  setStatus('Reconnecting...');
   if (!(await healthCheck())) scheduleReconnect();
 });
 
-window.addEventListener("online", () => {
-  reconnectAttempts = 0;
-  healthCheck();
+selModel.addEventListener('change', applySettings);
+chkThinking.addEventListener('change', applySettings);
+
+// Suggestion buttons
+document.querySelectorAll('.suggestion').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const msg = btn.dataset.msg;
+    if (msg && !processing) {
+      input.value = msg;
+      sendMessage();
+    }
+  });
 });
 
-window.addEventListener("offline", handleDisconnect);
+window.addEventListener('online', () => { reconnectAttempts = 0; healthCheck(); });
+window.addEventListener('offline', handleDisconnect);
 
+// ── Init ──────────────────────────────────────
 (async () => {
   await fetchServerConfig();
+  await applySettings();
   startHealthCheck();
-  startStaleDetection();
   input.focus();
 })();
 </script>

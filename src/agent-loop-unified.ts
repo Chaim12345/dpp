@@ -438,7 +438,9 @@ export class UnifiedAgentLoop {
       "<_calls>",
       "<tool_calls>",
       "<｜｜DSML｜｜invoke",
+      "<invoke",
       "<function_calls>",
+      "<function_call",
       "<pi-tool-calls>",
     ];
     const endMarkers = [
@@ -446,7 +448,9 @@ export class UnifiedAgentLoop {
       "</_calls>",
       "</tool_calls>",
       "</｜｜DSML｜｜invoke>",
+      "</invoke>",
       "</function_calls>",
+      "</function_call>",
       "</pi-tool-calls>",
     ];
     const longestMarkerLength = Math.max(
@@ -499,10 +503,14 @@ export class UnifiedAgentLoop {
       "<_calls>",
       "<tool_calls>",
       "<function_calls>",
+      "<function_call",
       "<pi-tool-calls>",
       "<｜｜DSML｜｜tool_calls>",
+      "<｜｜DSML｜｜invoke",
+      "<invoke",
       "\"tool_calls\"",
       "\"_calls\"",
+      "{\"tool\"",
     ];
     if (markers.some((marker) => text.includes(marker))) return true;
 

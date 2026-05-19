@@ -12,6 +12,10 @@
     "web": "bun run src/web-server.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.75.3",
+    "@earendil-works/pi-ai": "^0.75.3",
+    "@earendil-works/pi-coding-agent": "^0.75.3",
+    "@earendil-works/pi-tui": "^0.75.3",
     "@mariozechner/pi-agent-core": "latest",
     "@mariozechner/pi-ai": "latest",
     "@opentui/core": "^0.2.10",

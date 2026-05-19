@@ -1,7 +1,6 @@
 // ── DeepSeek Agent REPL TUI ───────────────────────────
 // neo-blessed + plain ANSI fallback. Mouse never enabled.
-// Uses box element (not log) for setContent() compatibility.
-// Renders are batched via setImmediate to prevent freezing.
+// Proper SPA with virtual scrollback, content capping, and stable scrolling.
 
 export const term = {
   red(s: string)  { process.stderr.write(`\x1b[31m${s}\x1b[0m`); },
@@ -46,6 +45,58 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 let spinnerIdx = 0;
 function spinnerFrame(): string { return SPINNER[spinnerIdx++ % SPINNER.length]; }
 
+// ── Scrollback ring buffer ─────────────────────────────
+// Keeps only the last MAX_LINES to prevent memory growth and crashes.
+const MAX_LINES = 5000;
+const MAX_CHARS = 500_000; // ~500KB cap
+
+class ScrollbackBuffer {
+  private lines: string[] = [];
+  private totalChars = 0;
+
+  append(line: string): void {
+    this.lines.push(line);
+    this.totalChars += line.length + 1;
+    this.trim();
+  }
+
+  appendMultiple(lines: string[]): void {
+    for (const l of lines) {
+      this.lines.push(l);
+      this.totalChars += l.length + 1;
+    }
+    this.trim();
+  }
+
+  private trim(): void {
+    // Trim by lines first
+    while (this.lines.length > MAX_LINES) {
+      const removed = this.lines.shift()!;
+      this.totalChars -= removed.length + 1;
+    }
+    // Then by chars
+    while (this.totalChars > MAX_CHARS && this.lines.length > 100) {
+      const removed = this.lines.shift()!;
+      this.totalChars -= removed.length + 1;
+    }
+  }
+
+  getContent(): string {
+    return this.lines.join("\n");
+  }
+
+  getLineCount(): number {
+    return this.lines.length;
+  }
+
+  clear(): void {
+    this.lines = [];
+    this.totalChars = 0;
+  }
+}
+
+const scrollback = new ScrollbackBuffer();
+
 let sections: TuiSection[] = [];
 let promptLabel = "> ";
 let statusMsg = "Ready";
@@ -76,13 +127,45 @@ function pushHistory(line: string): void {
 
 // ── Render batching: coalesce rapid screen.render() calls ──
 let renderScheduled = false;
+let renderPending = false;
+
 function scheduleRender(): void {
-  if (renderScheduled) return;
+  if (renderScheduled) {
+    renderPending = true;
+    return;
+  }
   renderScheduled = true;
   setImmediate(() => {
     renderScheduled = false;
-    if (blessedMode && screen) screen.render();
+    if (blessedMode && screen) {
+      // Auto-scroll to bottom before rendering
+      if (contentBox) {
+        contentBox.setScrollPerc(100);
+      }
+      screen.render();
+    }
+    // If more renders were requested during this one, schedule another
+    if (renderPending) {
+      renderPending = false;
+      scheduleRender();
+    }
   });
+}
+
+// ── Debounced content update: batch multiple appends into one setContent ──
+let contentUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+let contentDirty = false;
+
+function debouncedContentUpdate(): void {
+  if (contentUpdateTimer) return;
+  contentUpdateTimer = setTimeout(() => {
+    contentUpdateTimer = null;
+    if (contentDirty && blessedMode && contentBox) {
+      contentBox.setContent(scrollback.getContent());
+      contentDirty = false;
+      scheduleRender();
+    }
+  }, 16); // ~60fps cap
 }
 
 // ── Spinner interval for processing state ──
@@ -110,12 +193,13 @@ function stopSpinner(): void {
 
 // ── Core blessed content helpers ───────────────────────
 function logLine(text: string): void {
-  if (blessedMode && contentBox) {
-    const current = contentBox.getContent() || "";
-    contentBox.setContent(current + text.replace(/\{[^\}]+\}/g, "") + "\n");
-    scheduleRender();
-  } else {
-    process.stdout.write(text.replace(/\{[^\}]+\}/g, "") + "\n");
+  const clean = text.replace(/\{[^\}]+\}/g, "");
+  scrollback.append(clean);
+  contentDirty = true;
+  debouncedContentUpdate();
+
+  if (!blessedMode) {
+    process.stdout.write(clean + "\n");
   }
 }
 
@@ -145,7 +229,12 @@ function buildSectionsContent(): string {
 
 function renderAllSections(): void {
   if (!blessedMode || !contentBox) return;
-  contentBox.setContent(buildSectionsContent());
+  // Rebuild scrollback from sections
+  scrollback.clear();
+  const content = buildSectionsContent();
+  scrollback.appendMultiple(content.split("\n"));
+  contentBox.setContent(scrollback.getContent());
+  contentDirty = false;
   scheduleRender();
 }
 
@@ -153,19 +242,18 @@ export function addSection(title: string, detail: string, color = "cyan", collap
   const id = String(++sectionIdCounter);
   const s: TuiSection = { id, title, detail, collapsed, color, status: "" };
   sections.push(s);
+
   if (blessedMode) {
-    // Append only the new section instead of full rebuild
     const header = renderSectionHeader(s);
-    const current = contentBox.getContent() || "";
-    let content = current + (current ? "\n" : "") + header;
+    scrollback.append(header);
     if (!collapsed && detail) {
       const lines = detail.split("\n");
       for (const line of lines) {
-        content += `\n  {${color}-fg}${line}{/${color}-fg}`;
+        scrollback.append(`  {${color}-fg}${line}{/${color}-fg}`);
       }
     }
-    contentBox.setContent(content);
-    scheduleRender();
+    contentDirty = true;
+    debouncedContentUpdate();
   } else {
     logLine(`${ansi(color)}── ${title} ──${A.reset}`);
     if (detail && !collapsed) logLine(detail);
@@ -186,16 +274,14 @@ export function updateSection(idx: number, detail: string): void {
 export function appendSection(idx: number, delta: string): void {
   if (idx < 0 || idx >= sections.length) return;
   sections[idx].detail += delta;
+
   if (blessedMode) {
-    // For append, directly append to box content (faster than full rebuild)
     const lines = delta.split("\n");
-    let appendText = "";
     for (const line of lines) {
-      appendText += `\n  {${sections[idx].color}-fg}${line}{/${sections[idx].color}-fg}`;
+      scrollback.append(`  {${sections[idx].color}-fg}${line}{/${sections[idx].color}-fg}`);
     }
-    const current = contentBox.getContent() || "";
-    contentBox.setContent(current + appendText);
-    scheduleRender();
+    contentDirty = true;
+    debouncedContentUpdate();
   } else {
     process.stdout.write(delta);
   }
@@ -222,8 +308,10 @@ export function toggleSection(idx: number): void {
 export function clearSections(): void {
   sections = [];
   sectionIdCounter = 0;
+  scrollback.clear();
   if (blessedMode && contentBox) {
     contentBox.setContent("");
+    contentDirty = false;
     scheduleRender();
   }
 }
@@ -276,12 +364,21 @@ export function setModelType(m: string): void {
 function updateHeader(): void {
   if (!blessedMode || !headerBox) return;
   const modelLabel = modelType === "expert" ? "🧠 Expert" : modelType === "coder" ? "💻 Coder" : "🤖 Default";
-  headerBox.setContent(` {bold}DeepSeek Agent{/bold}  │  ${modelLabel}  │  Turn: {cyan-fg}${turnCount}{/cyan-fg}  │  {gray-fg}/help{/gray-fg}`);
+  const bufInfo = scrollback.getLineCount() > 1000 ? `  {gray-fg}buf:${scrollback.getLineCount()}{/gray-fg}` : "";
+  headerBox.setContent(` {bold}DeepSeek Agent{/bold}  │  ${modelLabel}  │  Turn: {cyan-fg}${turnCount}{/cyan-fg}${bufInfo}  │  {gray-fg}/help{/gray-fg}`);
   scheduleRender();
 }
 
 export function flushRender(): void {
-  if (blessedMode && screen) screen.render();
+  if (blessedMode && screen) {
+    // Flush any pending content update
+    if (contentDirty && contentBox) {
+      contentBox.setContent(scrollback.getContent());
+      contentDirty = false;
+    }
+    if (contentBox) contentBox.setScrollPerc(100);
+    screen.render();
+  }
 }
 
 // ── Blessed TUI init ──────────────────────────────────
@@ -316,7 +413,7 @@ export async function startTui(onLine: (line: string) => void | Promise<void>): 
   });
   screen.append(headerBox);
 
-  // Content area (box, not log — supports setContent properly)
+  // Content area with proper scrolling
   contentBox = blessed.box({
     top: 1, left: 0, width: "100%", bottom: 3,
     bg: tc("bg"), fg: tc("text"),
@@ -325,9 +422,28 @@ export async function startTui(onLine: (line: string) => void | Promise<void>): 
     scrollbar: { ch: "│", style: { fg: tc("border") } },
     tags: true,
     mouse: false,
-    keys: false,
+    keys: true,
+    vi: true, // Enable vim-like scrolling (j/k, gg, G, Ctrl+d/u)
   });
   screen.append(contentBox);
+
+  // Scroll key bindings for content area
+  contentBox.key(["pageup"], () => {
+    contentBox.scroll(-Math.floor(contentBox.height * 0.8));
+    scheduleRender();
+  });
+  contentBox.key(["pagedown"], () => {
+    contentBox.scroll(Math.floor(contentBox.height * 0.8));
+    scheduleRender();
+  });
+  contentBox.key(["home"], () => {
+    contentBox.setScrollPerc(0);
+    scheduleRender();
+  });
+  contentBox.key(["end"], () => {
+    contentBox.setScrollPerc(100);
+    scheduleRender();
+  });
 
   // Status bar
   statusBar = blessed.box({
@@ -348,15 +464,22 @@ export async function startTui(onLine: (line: string) => void | Promise<void>): 
   });
   screen.append(inputBox);
 
-  // Key bindings
+  // Global key bindings
   screen.key(["C-c"], () => { stopTui(); process.exit(0); });
   screen.key(["C-l"], () => { clearSections(); showStatus("Screen cleared"); });
 
+  // Allow scrolling content even when input is focused
+  inputBox.key(["pageup"], () => {
+    contentBox.scroll(-Math.floor(contentBox.height * 0.8));
+    scheduleRender();
+  });
+  inputBox.key(["pagedown"], () => {
+    contentBox.scroll(Math.floor(contentBox.height * 0.8));
+    scheduleRender();
+  });
+
   inputBox.on("submit", async (line: string) => {
-    const fs = require("fs");
-    const logPath = "/root/deepseek-full-api/pi-harness/tui-debug.log";
     try {
-      fs.appendFileSync(logPath, `[${new Date().toISOString()}] submit: ${JSON.stringify(line)}\n`);
       pushHistory(line);
       inputBox.setValue("");
       inputBox.focus();
@@ -364,7 +487,6 @@ export async function startTui(onLine: (line: string) => void | Promise<void>): 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : "";
-      fs.appendFileSync(logPath, `[${new Date().toISOString()}] ERROR: ${msg}\n${stack}\n`);
       addSection("Error", `${msg}\n${stack?.split("\n").slice(0, 3).join("\n") || ""}`, "red", false);
       showStatus(`Turn failed: ${msg}`);
     }
@@ -423,6 +545,10 @@ function startReadlineFallback(): void {
 
 export function stopTui(): void {
   stopSpinner();
+  if (contentUpdateTimer) {
+    clearTimeout(contentUpdateTimer);
+    contentUpdateTimer = null;
+  }
   if (blessedMode && screen) {
     screen.destroy();
   }

@@ -1,9 +1,9 @@
 // ── DeepSeek Agent Web UI Server ──────────────────────
 // Bun HTTP server serving a single-page web UI.
-// POST /api/chat → starts UnifiedAgentLoop, streams events as SSE.
-// Enhanced with robust network instability handling and long idle timeout.
+// POST /api/chat → starts PiAgentLoop, streams events as SSE.
+// Supports multiple conversations, each mapped to a DeepSeek chat session.
 
-import { UnifiedAgentLoop, type AgentLoopEvent } from "./agent-loop-unified.js";
+import { PiAgentLoop } from "./pi-agent-loop.js";
 const PORT = parseInt(process.env.PORT || "3456", 10);
 
 // ── Configuration ─────────────────────────────────────
@@ -11,14 +11,91 @@ const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(24 * 60 *
 const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || "30000", 10); // 30 seconds
 const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || String(60 * 60 * 1000), 10); // 1 hour for long-running agent tasks
 const MAX_RECONNECT_ATTEMPTS = parseInt(process.env.MAX_RECONNECT_ATTEMPTS || "10", 10);
+const MAX_CONVERSATIONS = parseInt(process.env.MAX_CONVERSATIONS || "50", 10);
 
 const HTML = await Bun.file(import.meta.dirname + "/../public/index.html").text();
 
-let loop: UnifiedAgentLoop | null = null;
+// ── Conversation Management ───────────────────────────
+interface Conversation {
+  id: string;
+  loop: PiAgentLoop;
+  createdAt: number;
+  lastUsedAt: number;
+  messageCount: number;
+  activeRun: boolean;
+}
+
+const conversations = new Map<string, Conversation>();
 let lastActivityTime = Date.now();
 let activeConnections = new Set<ReadableStreamDefaultController>();
 let idleTimeoutTimer: Timer | null = null;
-let activeRun = false;
+
+function generateConversationId(): string {
+  return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getConversation(id: string): Conversation | undefined {
+  return conversations.get(id);
+}
+
+async function createConversation(modelType?: string, thinkingEnabled?: boolean): Promise<Conversation> {
+  // Evict oldest conversation if at limit
+  if (conversations.size >= MAX_CONVERSATIONS) {
+    let oldestId: string | null = null;
+    let oldestTime = Infinity;
+    for (const [id, conv] of conversations) {
+      if (!conv.activeRun && conv.lastUsedAt < oldestTime) {
+        oldestTime = conv.lastUsedAt;
+        oldestId = id;
+      }
+    }
+    if (oldestId) {
+      conversations.delete(oldestId);
+    }
+  }
+
+  const id = generateConversationId();
+  const loop = new PiAgentLoop({
+    modelType: modelType || "expert",
+    thinkingEnabled: thinkingEnabled ?? false,
+    maxRounds: 25,
+  });
+  await loop.init();
+
+  const conv: Conversation = {
+    id,
+    loop,
+    createdAt: Date.now(),
+    lastUsedAt: Date.now(),
+    messageCount: 0,
+    activeRun: false,
+  };
+  conversations.set(id, conv);
+  return conv;
+}
+
+function listConversations(): Array<{ id: string; createdAt: number; lastUsedAt: number; messageCount: number; activeRun: boolean }> {
+  const result: Array<{ id: string; createdAt: number; lastUsedAt: number; messageCount: number; activeRun: boolean }> = [];
+  for (const [id, conv] of conversations) {
+    result.push({
+      id: conv.id,
+      createdAt: conv.createdAt,
+      lastUsedAt: conv.lastUsedAt,
+      messageCount: conv.messageCount,
+      activeRun: conv.activeRun,
+    });
+  }
+  return result.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+}
+
+function deleteConversation(id: string): boolean {
+  const conv = conversations.get(id);
+  if (conv && !conv.activeRun) {
+    conversations.delete(id);
+    return true;
+  }
+  return false;
+}
 
 // ── Idle timeout management ───────────────────────────
 function resetIdleTimeout() {
@@ -59,7 +136,7 @@ function handleHealth(): Response {
     lastActivity: new Date(lastActivityTime).toISOString(),
     idleTimeoutMs: IDLE_TIMEOUT_MS,
     heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-    agentInitialized: loop !== null,
+    agentInitialized: conversations.size > 0,
     timestamp: Date.now(),
   });
 }
@@ -75,47 +152,36 @@ function handleConnectionInfo(): Response {
   });
 }
 
-async function ensureLoop(modelType?: string, thinkingEnabled?: boolean): Promise<UnifiedAgentLoop> {
-  if (!loop) {
-    loop = new UnifiedAgentLoop({
-      modelType: modelType || "expert",
-      thinkingEnabled: thinkingEnabled ?? false,
-      maxRounds: 25,
-    });
-    await loop.init();
-    return loop;
-  }
-
-  if (modelType) loop.modelType = modelType;
-  if (thinkingEnabled !== undefined) loop.thinkingEnabled = thinkingEnabled;
-  return loop;
-}
-
 async function handleChat(req: Request): Promise<Response> {
   resetIdleTimeout();
 
-  let body: { message?: string; modelType?: string; thinkingEnabled?: boolean };
+  let body: { message?: string; modelType?: string; thinkingEnabled?: boolean; conversationId?: string };
   try {
     body = await req.json();
   } catch {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
-  const { message, modelType, thinkingEnabled } = body;
+  const { message, modelType, thinkingEnabled, conversationId } = body;
 
   if (!message || typeof message !== "string") {
     return jsonResponse({ error: "message is required" }, 400);
   }
 
-  if (activeRun) {
-    return jsonResponse({ error: "Agent is already processing a message" }, 409);
+  // Get or create conversation
+  let conv: Conversation;
+  if (conversationId) {
+    conv = getConversation(conversationId) || await createConversation(modelType, thinkingEnabled);
+  } else {
+    conv = await createConversation(modelType, thinkingEnabled);
   }
 
-  try {
-    await ensureLoop(modelType, thinkingEnabled);
-  } catch (err: unknown) {
-    return jsonResponse({ error: `Agent initialization failed: ${(err as Error).message}` }, 500);
+  if (conv.activeRun) {
+    return jsonResponse({ error: "Conversation is already processing a message" }, 409);
   }
+
+  conv.lastUsedAt = Date.now();
+  conv.messageCount++;
 
   // SSE stream with heartbeat and robust error handling
   let heartbeatTimer: Timer | null = null;
@@ -165,13 +231,123 @@ async function handleChat(req: Request): Promise<Response> {
         try { controller.close(); } catch {}
       }
 
-      const unsub = loop!.subscribe(async (ev: AgentLoopEvent) => {
-        send(ev.type, ev);
+      // Map pi-agent-core events to our SSE event format
+      let currentRound = 0;
+      let toolCallCounter = 0;
+      let toolStartTimes = new Map<string, number>();
+      let assistantText = "";
+      let thinkingText = "";
+
+      const unsub = conv.loop.subscribe(async (ev: any) => {
+        switch (ev.type) {
+          case "agent_start":
+            currentRound = 0;
+            toolCallCounter = 0;
+            toolStartTimes.clear();
+            assistantText = "";
+            thinkingText = "";
+            send("status", { message: "Starting..." });
+            send("conversation", { id: conv.id });
+            break;
+
+          case "turn_start":
+            currentRound++;
+            send("status", { message: `Round ${currentRound}/${conv.loop.maxRounds}` });
+            send("stream_start", {});
+            break;
+
+          case "message_update":
+            if (ev.assistantMessageEvent) {
+              const ame = ev.assistantMessageEvent;
+              if (ame.type === "text_delta") {
+                assistantText += ame.delta || "";
+                send("text_delta", { delta: ame.delta || "" });
+              } else if (ame.type === "thinking_delta") {
+                thinkingText += ame.delta || "";
+                send("thinking_delta", { delta: ame.delta || "" });
+              } else if (ame.type === "toolcall_delta") {
+                // Tool calls detected during streaming
+                const content = ame.partial?.content || [];
+                for (const block of content) {
+                  if (block.type === "toolCall" && block.id && block.name) {
+                    const tcId = `tc_${toolCallCounter}`;
+                    if (!toolStartTimes.has(tcId)) {
+                      toolCallCounter++;
+                      toolStartTimes.set(tcId, Date.now());
+                      send("tool_call_detected", {
+                        toolCallId: tcId,
+                        name: block.name,
+                        args: block.arguments || {},
+                      });
+                    }
+                  }
+                }
+              }
+            }
+            break;
+
+          case "message_end":
+            // Assistant message complete (may not fire for assistant, only user)
+            if (ev.message?.role === "assistant") {
+              send("stream_end", { fullText: assistantText || "" });
+            }
+            break;
+
+          case "tool_execution_start":
+            toolStartTimes.set(ev.toolCallId, Date.now());
+            send("tool_call_start", {
+              toolCallId: ev.toolCallId,
+              name: ev.toolName,
+              args: ev.args || {},
+            });
+            send("status", { message: `Executing ${ev.toolName}` });
+            break;
+
+          case "tool_execution_end":
+            const startTime = toolStartTimes.get(ev.toolCallId);
+            const duration = startTime ? `${((Date.now() - startTime) / 1000).toFixed(1)}s` : "";
+            const content = ev.result?.content?.map((c: any) => c.text || "").join("") || "";
+            send("tool_result", {
+              toolCallId: ev.toolCallId,
+              name: ev.toolName,
+              content: content.slice(0, 10000),
+              isError: ev.isError || false,
+              duration,
+            });
+            break;
+
+          case "turn_end":
+            const hasTools = (ev.toolResults?.length || 0) > 0;
+            send("round_complete", { round: currentRound, hasToolCalls: hasTools });
+            if (!hasTools) {
+              send("turn_complete", {
+                turns: conv.loop.turnCount,
+                messages: conv.loop.messagesSnapshot,
+                estimatedTokens: conv.loop.estimateCurrentTokens(),
+              });
+            }
+            break;
+
+          case "agent_end":
+            // Ensure stream_end is sent if not already
+            send("stream_end", { fullText: assistantText || "" });
+            send("turn_complete", {
+              turns: conv.loop.turnCount,
+              messages: conv.loop.messagesSnapshot,
+              estimatedTokens: conv.loop.estimateCurrentTokens(),
+            });
+            send("done", { status: "complete" });
+            break;
+
+          case "error":
+            send("error", { message: ev.error?.message || "Unknown error" });
+            break;
+        }
       });
 
       try {
-        activeRun = true;
-        await loop!.execute(message);
+        conv.activeRun = true;
+        await conv.loop.execute(message);
         send("done", { status: "complete" });
       } catch (err: unknown) {
         const errorMsg = (err as Error).message || "Unknown error";
@@ -188,7 +364,7 @@ async function handleChat(req: Request): Promise<Response> {
           send("error", { message: errorMsg });
         }
       } finally {
-        activeRun = false;
+        conv.activeRun = false;
         unsub();
         cleanup();
       }
@@ -199,9 +375,9 @@ async function handleChat(req: Request): Promise<Response> {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (requestTimeoutTimer) clearTimeout(requestTimeoutTimer);
       if (streamController) activeConnections.delete(streamController);
-      if (activeRun) {
-        loop?.abort();
-        activeRun = false;
+      if (conv.activeRun) {
+        conv.loop.abort();
+        conv.activeRun = false;
       }
       console.log("[SSE] Client disconnected");
     },
@@ -219,6 +395,14 @@ async function handleChat(req: Request): Promise<Response> {
   });
 }
 
+// Return conversation ID in response
+async function handleChatWithConvId(req: Request): Promise<Response> {
+  const chatResponse = await handleChat(req);
+  // The conversation ID is returned in the SSE stream as part of the done event
+  // For now, we'll add it to headers
+  return chatResponse;
+}
+
 async function handleSettings(req: Request): Promise<Response> {
   resetIdleTimeout();
 
@@ -229,22 +413,52 @@ async function handleSettings(req: Request): Promise<Response> {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
-  let currentLoop: UnifiedAgentLoop;
-  try {
-    currentLoop = await ensureLoop(body.modelType, body.thinkingEnabled);
-  } catch (err: unknown) {
-    return jsonResponse({ error: `Agent initialization failed: ${(err as Error).message}` }, 500);
+  // Apply settings to all active conversations
+  for (const conv of conversations.values()) {
+    if (body.modelType) conv.loop.modelType = body.modelType;
+    if (body.thinkingEnabled !== undefined) conv.loop.thinkingEnabled = body.thinkingEnabled;
+    if (body.maxRounds) conv.loop.maxRounds = body.maxRounds;
   }
 
-  if (body.modelType) currentLoop.modelType = body.modelType;
-  if (body.thinkingEnabled !== undefined) currentLoop.thinkingEnabled = body.thinkingEnabled;
-  if (body.maxRounds) currentLoop.maxRounds = body.maxRounds;
-
+  // Return settings from first conversation or defaults
+  const firstConv = conversations.values().next().value;
   return jsonResponse({
-    modelType: currentLoop.modelType,
-    thinkingEnabled: currentLoop.thinkingEnabled,
-    maxRounds: currentLoop.maxRounds,
+    modelType: firstConv?.loop.modelType || body.modelType || "expert",
+    thinkingEnabled: firstConv?.loop.thinkingEnabled ?? body.thinkingEnabled ?? false,
+    maxRounds: firstConv?.loop.maxRounds || body.maxRounds || 25,
   });
+}
+
+// ── Conversation Management Endpoints ─────────────────
+function handleListConversations(): Response {
+  return jsonResponse({ conversations: listConversations() });
+}
+
+function handleDeleteConversation(req: Request): Response {
+  const url = new URL(req.url);
+  const id = url.searchParams.get("id");
+  if (!id) {
+    return jsonResponse({ error: "conversation id is required" }, 400);
+  }
+  if (deleteConversation(id)) {
+    return jsonResponse({ status: "deleted", id });
+  }
+  return jsonResponse({ error: "conversation not found or is active" }, 404);
+}
+
+function handleClearConversation(req: Request): Response {
+  const url = new URL(req.url);
+  const id = url.searchParams.get("id");
+  if (!id) {
+    return jsonResponse({ error: "conversation id is required" }, 400);
+  }
+  const conv = getConversation(id);
+  if (conv && !conv.activeRun) {
+    conv.loop.clearMessages();
+    conv.messageCount = 0;
+    return jsonResponse({ status: "cleared", id });
+  }
+  return jsonResponse({ error: "conversation not found or is active" }, 404);
 }
 
 // ── CORS preflight ────────────────────────────────────
@@ -292,8 +506,25 @@ try {
       }
       if (req.method === "POST" && url.pathname === "/api/clear") {
         resetIdleTimeout();
-        loop?.clearMessages();
+        // Clear all conversations
+        for (const conv of conversations.values()) {
+          if (!conv.activeRun) {
+            conv.loop.clearMessages();
+            conv.messageCount = 0;
+          }
+        }
         return jsonResponse({ status: "cleared" });
+      }
+
+      // Conversation management routes
+      if (req.method === "GET" && url.pathname === "/api/conversations") {
+        return handleListConversations();
+      }
+      if (req.method === "DELETE" && url.pathname === "/api/conversations") {
+        return handleDeleteConversation(req);
+      }
+      if (req.method === "POST" && url.pathname === "/api/conversations/clear") {
+        return handleClearConversation(req);
       }
 
       // Static files

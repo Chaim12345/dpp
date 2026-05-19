@@ -16,7 +16,7 @@ type Frame =
   | { type: 'invoke'; name: string; params: Record<string, string> }
   | { type: 'parameter'; name: string };
 
-const DSML_WRAPPERS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls']);
+const DSML_WRAPPERS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '｜｜DSML｜｜tool_calls', '｜｜DSML｜｜function_calls', '｜｜DSML｜｜pi-tool-calls', '_calls']);
 
 function getAttr(tag: Tag, attrName: string): string | undefined {
   if (!tag.attributes) return undefined;
@@ -54,12 +54,14 @@ export class XmlToolCallParser {
     switch (event) {
       case SaxEventType.OpenTag: {
         const name = detail.name;
+        // Handle both bare tags and DSML-prefixed tags (e.g., "｜｜DSML｜｜invoke")
+        const bareName = name.replace(/^｜｜DSML｜｜/, '');
         if (DSML_WRAPPERS.has(name)) {
           this.stack.push({ type: 'tool_calls' });
-        } else if (name === 'invoke') {
+        } else if (bareName === 'invoke') {
           const invokeName = getAttr(detail, 'name') || '';
           this.stack.push({ type: 'invoke', name: invokeName, params: {} });
-        } else if (name === 'parameter') {
+        } else if (bareName === 'parameter') {
           const paramName = getAttr(detail, 'name') || '';
           this.stack.push({ type: 'parameter', name: paramName });
         }
@@ -78,7 +80,8 @@ export class XmlToolCallParser {
       }
       case SaxEventType.CloseTag: {
         const name = detail.name;
-        if (name === 'invoke') {
+        const bareName = name.replace(/^｜｜DSML｜｜/, '');
+        if (bareName === 'invoke') {
           while (this.stack.length > 0) {
             const frame = this.stack.pop()!;
             if (frame.type === 'invoke') {
@@ -92,7 +95,7 @@ export class XmlToolCallParser {
               break;
             }
           }
-        } else if (name === 'parameter') {
+        } else if (bareName === 'parameter') {
           if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'parameter') {
             this.stack.pop();
           }
