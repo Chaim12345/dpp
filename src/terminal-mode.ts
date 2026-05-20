@@ -124,6 +124,7 @@ export class TerminalMode {
   // Streaming accumulation
   private currentAssistantText = "";
   private currentThinkingText = "";
+  private renderPending = false;
 
   private options: Required<TerminalModeOptions>;
 
@@ -172,6 +173,19 @@ export class TerminalMode {
 
   private moveCursor(row: number, col: number): void {
     process.stdout.write(`\x1b[${row};${col}H`);
+  }
+
+  /**
+   * Throttled render for streaming updates. Batches rapid renders to ~50ms
+   * to prevent terminal flicker during text delta streaming.
+   */
+  private renderThrottled(): void {
+    if (this.renderPending) return;
+    this.renderPending = true;
+    setTimeout(() => {
+      this.renderPending = false;
+      this.render();
+    }, 50);
   }
 
   /**
@@ -443,10 +457,10 @@ export class TerminalMode {
               const ame = event.assistantMessageEvent;
               if (ame.type === "text_delta") {
                 this.currentAssistantText += ame.delta || "";
-                this.render();
+                this.renderThrottled();
               } else if (ame.type === "thinking_delta") {
                 this.currentThinkingText += ame.delta || "";
-                this.render();
+                this.renderThrottled();
               }
             }
             break;
@@ -479,36 +493,17 @@ export class TerminalMode {
             break;
           }
 
-          case "agent_end": {
-            // Extract assistant message from final messages
-            const msgs = event.messages || [];
-            for (const m of msgs) {
-              if (m.role === "assistant") {
-                const msgText = typeof m.content === "string"
-                  ? m.content
-                  : m.content?.map((c: any) => c.type === "text" ? c.text : "").join("") || "";
-                if (msgText && msgText !== this.currentAssistantText) {
-                  this.messages.push({
-                    role: "assistant",
-                    content: msgText,
-                    timestamp: Date.now(),
-                  });
-                }
-              }
-            }
-            // If we accumulated text but didn't get it from agent_end, use that
+          case "agent_end":
+            // Only add assistant message from streaming accumulation (already displayed during stream)
+            // Do NOT also extract from event.messages - that would duplicate
             if (this.currentAssistantText) {
-              const lastMsg = this.messages[this.messages.length - 1];
-              if (!lastMsg || lastMsg.role !== "assistant" || lastMsg.content !== this.currentAssistantText) {
-                this.messages.push({
-                  role: "assistant",
-                  content: this.currentAssistantText,
-                  timestamp: Date.now(),
-                });
-              }
+              this.messages.push({
+                role: "assistant",
+                content: this.currentAssistantText,
+                timestamp: Date.now(),
+              });
             }
             break;
-          }
 
           case "error":
             this.messages.push({
