@@ -3,54 +3,32 @@
 // Uses pi's SessionManager for persistence, pi-tui for rendering.
 
 import {
-  TUI,
   Container,
-  Box,
   Text,
   Markdown,
-  Input,
-  SelectList,
   Spacer,
   StdinBuffer,
   setCellDimensions,
   truncateToWidth,
-  parseKey,
   Key,
-  getCapabilities,
 } from "@earendil-works/pi-tui";
 import {
   initTheme,
   getMarkdownTheme,
-  SessionManager,
-  AuthStorage,
-  SettingsManager,
-  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { createPiSession, type PiSession } from "./pi-session.js";
 
-// ── ANSI Color Helpers ──────────────────────────────────────────
+// ── Theme-based Styling ─────────────────────────────────────────
 
 const C = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  italic: "\x1b[3m",
-  underline: "\x1b[4m",
-  red: "\x1b[31m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  blue: "\x1b[34m",
-  magenta: "\x1b[35m",
-  cyan: "\x1b[36m",
-  white: "\x1b[37m",
   gray: "\x1b[90m",
-  brightCyan: "\x1b[96m",
-  brightYellow: "\x1b[93m",
-  brightRed: "\x1b[91m",
-  brightGreen: "\x1b[92m",
-  bgBlue: "\x1b[48;5;24m",
-  bgDark: "\x1b[48;5;235m",
-  bgDarker: "\x1b[48;5;233m",
+  dim: "\x1b[2m",
+  green: "\x1b[32m",
+  red: "\x1b[31m",
+  yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
 };
 
 function s(text: string, ...styles: string[]): string {
@@ -62,15 +40,10 @@ function stripAnsi(text: string): string {
 }
 
 function cleanAssistantText(text: string): string {
-  // Remove [Assistant] prefixes
   let cleaned = text.replace(/\[Assistant\]\s*/g, "");
-  // Remove [Tool:name] markers with their JSON args
   cleaned = cleaned.replace(/\[Tool:\w+\]\s*\{[^}]*\}\s*/g, "");
-  // Remove standalone JSON objects on their own lines (tool call args)
   cleaned = cleaned.replace(/^\s*\{[^}]*\}\s*$/gm, "");
-  // Remove "Calling:" lines
   cleaned = cleaned.replace(/\*\*Calling:\*\*\s*`[^`]*`\s*/g, "");
-  // Clean up multiple blank lines
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   return cleaned.trim();
 }
@@ -90,7 +63,6 @@ function wrapText(text: string, width: number): string[] {
         lines.push(remaining);
         break;
       }
-      // Try to break at word boundary
       const segment = remaining.slice(0, cut);
       const spaceIdx = segment.lastIndexOf(" ");
       if (spaceIdx > width * 0.5) {
@@ -131,16 +103,19 @@ export class TerminalMode {
   private statusText = "Ready";
   private statusColor = C.green;
   private running = false;
-  private stdinRaw = false;
   private cursorVisible = true;
-  private lastRenderHeight = 0;
 
   // Streaming accumulation
   private currentAssistantText = "";
   private currentThinkingText = "";
+  private currentToolCalls: { id: string; name: string; args: string }[] = [];
+  private toolExecutionStarts = new Map<string, number>();
+  private currentToolPartialResult = "";
   private renderPending = false;
 
   private options: Required<TerminalModeOptions>;
+
+  private theme: ReturnType<typeof getMarkdownTheme> | null = null;
 
   constructor(options: TerminalModeOptions = {}) {
     this.options = {
@@ -163,7 +138,6 @@ export class TerminalMode {
   private setRawMode(raw: boolean): void {
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(raw);
-      this.stdinRaw = raw;
     }
   }
 
@@ -181,18 +155,6 @@ export class TerminalMode {
     }
   }
 
-  private clearScreen(): void {
-    process.stdout.write("\x1b[2J\x1b[H");
-  }
-
-  private moveCursor(row: number, col: number): void {
-    process.stdout.write(`\x1b[${row};${col}H`);
-  }
-
-  /**
-   * Throttled render for streaming updates. Batches rapid renders to ~50ms
-   * to prevent terminal flicker during text delta streaming.
-   */
   private renderThrottled(): void {
     if (this.renderPending) return;
     this.renderPending = true;
@@ -202,196 +164,228 @@ export class TerminalMode {
     }, 50);
   }
 
-  /**
-   * Render the full terminal UI using pi-tui components where possible,
-   * with ANSI fallback for dynamic areas (input, status).
-   */
+  private buildHeader(cols: number, rows: number): Container {
+    const header = new Container();
+
+    const modelTag = s(` ${this.options.modelType} `, C.gray);
+    const thinkTag = s(` Thinking: ${this.options.thinkingEnabled ? "ON" : "OFF"} `, C.gray);
+
+    const headerText = s(" DeepSeek Agent ", C.bold) + modelTag + thinkTag;
+    const sep = "─".repeat(cols);
+
+    header.addChild(new Text(headerText, 1, 0));
+    header.addChild(new Text(sep, 0, 0));
+    header.addChild(new Spacer(1));
+
+    return header;
+  }
+
+  private buildMessage(msg: DisplayMessage, theme: ReturnType<typeof getMarkdownTheme>): Container {
+    const mc = new Container();
+
+    switch (msg.role) {
+      case "user": {
+        const prefix = s("▸ ", C.cyan, C.bold);
+        const wrapped = wrapText(msg.content, 78);
+        for (let i = 0; i < wrapped.length; i++) {
+          mc.addChild(new Text((i === 0 ? prefix : "  ") + wrapped[i], 1, 0));
+        }
+        mc.addChild(new Spacer(1));
+        break;
+      }
+      case "assistant": {
+        const cleaned = cleanAssistantText(msg.content);
+        if (cleaned) {
+          const md = new Markdown(cleaned, 2, 0, theme);
+          mc.addChild(md);
+          mc.addChild(new Spacer(1));
+        }
+        break;
+      }
+      case "thinking": {
+        const wrapped = wrapText(msg.content, 74);
+        for (const line of wrapped.slice(0, 5)) {
+          mc.addChild(new Text(s("   " + line, C.dim), 1, 0));
+        }
+        if (wrapped.length > 5) {
+          mc.addChild(new Text(s(`   ... (${wrapped.length - 5} more lines)`, C.gray, C.dim), 1, 0));
+        }
+        mc.addChild(new Spacer(1));
+        break;
+      }
+      case "tool": {
+        const toolHeader = s(`  ⚙ ${msg.name || "tool"}`, C.dim) +
+          (msg.duration ? s(` (${msg.duration})`, C.gray, C.dim) : "");
+        mc.addChild(new Text(toolHeader, 1, 0));
+        const contentWrapped = wrapText(msg.content, 76);
+        const maxLines = msg.isError ? 5 : 3;
+        for (const line of contentWrapped.slice(0, maxLines)) {
+          mc.addChild(new Text(s("    " + line, msg.isError ? C.red : C.gray, C.dim), 1, 0));
+        }
+        if (contentWrapped.length > maxLines) {
+          mc.addChild(new Text(s(`    ... (${contentWrapped.length - maxLines} more)`, C.gray, C.dim), 1, 0));
+        }
+        mc.addChild(new Spacer(1));
+        break;
+      }
+      case "error": {
+        mc.addChild(new Text(s(`  ✗ ${msg.content}`, C.red, C.bold), 1, 0));
+        mc.addChild(new Spacer(1));
+        break;
+      }
+      case "system": {
+        const wrapped = wrapText(msg.content, 78);
+        for (const line of wrapped) {
+          mc.addChild(new Text(s("  " + line, C.gray, C.dim), 1, 0));
+        }
+        mc.addChild(new Spacer(1));
+        break;
+      }
+    }
+
+    return mc;
+  }
+
+  private renderContent(cols: number, rows: number): string[] {
+    const theme = this.theme!;
+    const content = new Container();
+
+    // Header
+    content.addChild(this.buildHeader(cols, rows));
+
+    // Messages
+    for (const msg of this.messages) {
+      content.addChild(this.buildMessage(msg, theme));
+    }
+
+    // Streaming indicator + content
+    if (this.isStreaming) {
+      if (this.currentThinkingText) {
+        const thinkLines = wrapText(this.currentThinkingText, 74);
+        for (const line of thinkLines.slice(-2)) {
+          content.addChild(new Text(s("   " + line, C.dim), 1, 0));
+        }
+        content.addChild(new Spacer(1));
+      }
+
+      if (this.currentAssistantText) {
+        const cleaned = cleanAssistantText(this.currentAssistantText);
+        if (cleaned) {
+          content.addChild(new Markdown(cleaned, 1, 0, theme));
+          content.addChild(new Spacer(1));
+        }
+      }
+
+      // Show tool calls detected during streaming
+      for (const tc of this.currentToolCalls) {
+        content.addChild(new Text(s(`  ⚙ ${tc.name}(${tc.args})`, C.dim), 1, 0));
+      }
+
+      // Streaming ellipsis
+      if (!this.currentTool) {
+        content.addChild(new Text(s("  ⋯", C.dim), 1, 0));
+        content.addChild(new Spacer(1));
+      }
+    }
+
+    // Current tool with execution progress
+    if (this.currentTool) {
+      const elapsed = ((Date.now() - this.currentTool.startTime) / 1000).toFixed(1);
+      content.addChild(new Text(s(`  ⚙ ${this.currentTool.name} [${elapsed}s]`, C.yellow), 1, 0));
+
+      // Show streaming partial result if available (e.g. edit diff, bash output)
+      if (this.currentToolPartialResult) {
+        const partialLines = this.currentToolPartialResult.split("\n").slice(0, 8);
+        for (const line of partialLines) {
+          content.addChild(new Text(s("    " + line, C.gray, C.dim), 1, 0));
+        }
+        if (this.currentToolPartialResult.split("\n").length > 8) {
+          content.addChild(new Text(s("    ... (streaming)", C.gray, C.dim), 1, 0));
+        }
+      }
+      content.addChild(new Spacer(1));
+    }
+
+    return content.render(cols);
+  }
+
+  private renderFooter(cols: number, rows: number): { inputLine: string; statusLine: string } {
+    const inputPrefix = s("▸ ", C.cyan, C.bold);
+    const inputText = this.inputBuffer || s("Type a message...", C.gray, C.dim);
+
+    const sessionInfo = this.session
+      ? `  T:${this.session.turnCount}  Tok:~${this.session.estimateTokens()}`
+      : "";
+    const statusStr = s(this.statusText, this.statusColor, C.bold) +
+      s(`  M:${this.messages.length}`, C.gray) +
+      s(sessionInfo, C.gray);
+
+    return {
+      inputLine: inputPrefix + inputText,
+      statusLine: " " + statusStr,
+    };
+  }
+
   private render(): void {
     const { cols, rows } = this.getSize();
     setCellDimensions({ cols, rows });
 
-    const headerRows = 2;
-    const statusRows = 1;
-    const inputRows = 3;
-    const contentRows = rows - headerRows - statusRows - inputRows;
+    // Fixed footer (always visible, 2 lines)
+    const footer = this.renderFooter(cols, rows);
 
-    // ── Header ──
-    const header = s(" DeepSeek Agent ", C.bgBlue, C.white, C.bold) +
-      s(` [${this.options.modelType}] `, C.bgDark, C.gray) +
-      s(` Thinking: ${this.options.thinkingEnabled ? "ON" : "OFF"} `, C.bgDark, C.gray) +
-      " ".repeat(Math.max(1, cols - 55));
+    // Scrollable content area (no padding — flush to footer)
+    const maxContentRows = rows - 2;
+    const contentLines = this.renderContent(cols, maxContentRows);
 
-    // ── Build content lines ──
-    const contentLines: string[] = [];
+    // Show the most recent lines, up to available rows
+    const scrollStart = Math.max(0, contentLines.length - maxContentRows);
+    const visibleContent = contentLines.slice(scrollStart);
 
-    for (const msg of this.messages) {
-      if (msg.role === "user") {
-        const prefix = s("▸ ", C.cyan, C.bold);
-        const wrapped = wrapText(msg.content, cols - 2);
-        for (let i = 0; i < wrapped.length; i++) {
-          contentLines.push(i === 0 ? prefix + wrapped[i] : "  " + wrapped[i]);
-        }
-        contentLines.push("");
-      } else if (msg.role === "assistant") {
-        const cleaned = cleanAssistantText(msg.content);
-        const wrapped = wrapText(cleaned, cols - 2);
-        for (const line of wrapped) {
-          contentLines.push("  " + line);
-        }
-        contentLines.push("");
-      } else if (msg.role === "thinking") {
-        const prefix = s("💭 ", C.dim);
-        const wrapped = wrapText(msg.content, cols - 4);
-        for (const line of wrapped.slice(0, 5)) {
-          contentLines.push(s("    " + line, C.dim));
-        }
-        if (wrapped.length > 5) {
-          contentLines.push(s(`    ... (${wrapped.length - 5} more lines)`, C.gray, C.dim));
-        }
-        contentLines.push("");
-      } else if (msg.role === "tool") {
-        const toolHeader = s(`  ⚙ ${msg.name || "tool"}`, C.yellow, C.dim) +
-          (msg.duration ? s(` (${msg.duration})`, C.gray, C.dim) : "");
-        contentLines.push(toolHeader);
-        const contentWrapped = wrapText(msg.content, cols - 4);
-        const maxLines = msg.isError ? 5 : 3;
-        for (const line of contentWrapped.slice(0, maxLines)) {
-          contentLines.push(s("    " + line, msg.isError ? C.red : C.gray, C.dim));
-        }
-        if (contentWrapped.length > maxLines) {
-          contentLines.push(s(`    ... (${contentWrapped.length - maxLines} more)`, C.gray, C.dim));
-        }
-        contentLines.push("");
-      } else if (msg.role === "error") {
-        contentLines.push(s(`  ✗ ${msg.content}`, C.red, C.bold));
-        contentLines.push("");
-      } else if (msg.role === "system") {
-        const wrapped = wrapText(msg.content, cols - 2);
-        for (const line of wrapped) {
-          contentLines.push(s("  " + line, C.gray, C.dim));
-        }
-        contentLines.push("");
-      }
-    }
+    // Home cursor
+    process.stdout.write("\x1b[H");
 
-    // Streaming indicator
-    if (this.isStreaming) {
-      contentLines.push(s("  ⋯ Streaming response...", C.cyan, C.dim));
-    }
-
-    // Current tool execution
-    if (this.currentTool) {
-      const elapsed = ((Date.now() - this.currentTool.startTime) / 1000).toFixed(1);
-      contentLines.push(s(`  ⚙ Executing: ${this.currentTool.name}(${this.currentTool.args}) [${elapsed}s]`, C.yellow, C.bold));
-    }
-
-    // Accumulating assistant text during streaming
-    if (this.isStreaming && this.currentAssistantText) {
-      const cleaned = cleanAssistantText(this.currentAssistantText);
-      const wrapped = wrapText(cleaned, cols - 2);
-      // Show last portion that fits
-      const availableRows = contentRows - contentLines.length - 2;
-      const showLines = wrapped.slice(-Math.max(1, availableRows));
-      for (const line of showLines) {
-        contentLines.push("  " + line);
-      }
-    }
-
-    // Accumulating thinking during streaming
-    if (this.isStreaming && this.currentThinkingText) {
-      const wrapped = wrapText(this.currentThinkingText, cols - 4);
-      const showLines = wrapped.slice(-2);
-      for (const line of showLines) {
-        contentLines.push(s("    " + line, C.dim));
-      }
-    }
-
-    // Trim to fit content area
-    if (contentLines.length > contentRows) {
-      contentLines.splice(0, contentLines.length - contentRows);
-    }
-
-    // Pad to fill content area
-    while (contentLines.length < contentRows) {
-      contentLines.push("");
-    }
-
-    // ── Output ──
-    // Use cursor positioning + clear-to-end-of-screen to prevent scroll/ghost
-    process.stdout.write("\x1b[H"); // Home cursor
-    process.stdout.write("\x1b[J"); // Clear from cursor to end of screen
-
-    // Header
-    process.stdout.write(truncateToWidth(header, cols) + "\n");
-    process.stdout.write("─".repeat(cols) + "\n");
-
-    // Content
-    for (const line of contentLines) {
-      process.stdout.write(truncateToWidth(line, cols) + "\n");
-    }
-
-    // Separator
-    process.stdout.write("─".repeat(cols) + "\n");
-
-    // Status bar
-    const sessionInfo = this.session ?
-      s(` Turns: ${this.session.turnCount} `, C.gray, C.bgDark) +
-      s(` Tokens: ~${this.session.estimateTokens()} `, C.gray, C.bgDark) : "";
-    const statusLine = s(` ${this.statusText} `, this.statusColor, C.bgDark, C.bold) +
-      s(` Messages: ${this.messages.length} `, C.gray, C.bgDark) +
-      sessionInfo +
-      " ".repeat(Math.max(1, cols - 50));
-    process.stdout.write(truncateToWidth(statusLine, cols) + "\n");
-
-    // Input area
-    const inputPrefix = s("▸ ", C.cyan, C.bold);
-    const placeholder = s("Type your message... (Enter to send, Ctrl+C to quit, /clear to reset)", C.gray, C.dim);
-    const inputDisplay = this.inputBuffer || placeholder;
-    const wrappedInput = wrapText(inputDisplay, cols - 2);
-    const showInputLines = wrappedInput.slice(0, inputRows - 1);
-    for (let i = 0; i < showInputLines.length; i++) {
-      process.stdout.write((i === 0 ? inputPrefix : "  ") + truncateToWidth(showInputLines[i], cols - 2) + "\n");
-    }
-    // Pad remaining input rows
-    for (let i = showInputLines.length; i < inputRows - 1; i++) {
+    // Write content lines (clear each line to prevent ghost characters)
+    for (const line of visibleContent) {
+      process.stdout.write(truncateToWidth(line, cols));
+      process.stdout.write("\x1b[K");
       process.stdout.write("\n");
     }
 
-    // Position cursor at end of input
-    const inputLineCount = showInputLines.length;
-    const lastInputLine = showInputLines[showInputLines.length - 1] || "";
-    const cursorCol = 3 + visibleLength(inputPrefix) + visibleLength(lastInputLine);
-    const cursorRow = headerRows + contentRows + statusRows + inputLineCount;
-    this.moveCursor(Math.min(cursorRow, rows), Math.min(cursorCol, cols));
+    // Input line
+    process.stdout.write(truncateToWidth(footer.inputLine, cols));
+    process.stdout.write("\x1b[K");
+    process.stdout.write("\n");
 
-    this.lastRenderHeight = rows;
+    // Status line
+    process.stdout.write(truncateToWidth(footer.statusLine, cols));
+    process.stdout.write("\x1b[K");
+
+    // Clear everything below (handles when previous render was taller)
+    process.stdout.write("\x1b[J");
+
+    // Position cursor on the input line
+    const inputRow = visibleContent.length + 1;
+    const cursorCol = 3 + visibleLength(this.inputBuffer);
+    process.stdout.write(`\x1b[${inputRow};${Math.min(cursorCol, cols - 1)}H`);
   }
 
   private handleKey(key: string): boolean {
-    // Ctrl+C
     if (key === "\u0003" || key === Key.CtrlC) {
       return false;
     }
-
-    // Ctrl+L - clear screen
     if (key === "\x0c" || key === Key.CtrlL) {
-      this.clearScreen();
+      process.stdout.write("\x1b[2J\x1b[H");
       this.render();
       return true;
     }
-
-    // Escape - clear input
     if (key === "\x1b" || key === Key.Escape) {
       this.inputBuffer = "";
       return true;
     }
-
-    // Enter
     if (key === "\r" || key === "\n" || key === Key.Enter) {
       if (this.inputBuffer.trim() && !this.isStreaming) {
         const text = this.inputBuffer.trim();
         this.inputBuffer = "";
-
         if (text === "/clear") {
           this.messages = [];
           this.session?.clearMessages();
@@ -407,34 +401,24 @@ export class TerminalMode {
         if (text === "/quit" || text === "/exit") {
           return false;
         }
-
         this.submitMessage(text);
       }
       return true;
     }
-
-    // Backspace
     if (key === "\x7f" || key === "\b" || key === Key.Backspace) {
       this.inputBuffer = this.inputBuffer.slice(0, -1);
       return true;
     }
-
-    // Arrow keys and other special keys (ignore for now)
     if (key.length > 1 && key !== "\t") {
       return true;
     }
-
-    // Tab
     if (key === "\t") {
       return true;
     }
-
-    // Regular printable character
     if (key.length === 1 && key >= " ") {
       this.inputBuffer += key;
       return true;
     }
-
     return true;
   }
 
@@ -448,6 +432,8 @@ export class TerminalMode {
     this.isStreaming = true;
     this.currentAssistantText = "";
     this.currentThinkingText = "";
+    this.currentToolCalls = [];
+    this.currentToolPartialResult = "";
     this.statusText = "Processing...";
     this.statusColor = C.cyan;
     this.render();
@@ -465,7 +451,7 @@ export class TerminalMode {
       const unsub = this.session.subscribe((event: any) => {
         switch (event.type) {
           case "turn_start":
-            this.statusText = `Round ${event.round || "?"}`;
+            this.statusText = `Turn ${event.round || "?"}`;
             this.statusColor = C.cyan;
             this.render();
             break;
@@ -481,30 +467,67 @@ export class TerminalMode {
                 this.renderThrottled();
               }
             }
+            // Extract tool calls from the partial assistant message
+            if (event.message?.content) {
+              const calls = event.message.content
+                .filter((c: any) => c.type === "toolCall")
+                .map((c: any) => ({
+                  id: c.id,
+                  name: c.name,
+                  args: JSON.stringify(c.arguments || {}).slice(0, 80),
+                }));
+              if (calls.length > 0 || this.currentToolCalls.length > 0) {
+                this.currentToolCalls = calls;
+                this.renderThrottled();
+              }
+            }
             break;
 
+          case "message_end": {
+            // If this is a tool result message, push it as a tool display message
+            if (event.message?.role === "toolResult") {
+              const text = event.message.content
+                ?.map((c: any) => c.text || "").join("") || "";
+              this.messages.push({
+                role: "tool",
+                content: text.slice(0, 500),
+                timestamp: Date.now(),
+                name: event.message.toolName || "tool",
+                isError: event.message.isError || false,
+              });
+              this.render();
+            }
+            break;
+          }
+
           case "tool_execution_start":
+            this.toolExecutionStarts.set(event.toolCallId, Date.now());
             this.currentTool = {
               name: event.toolName,
               args: JSON.stringify(event.args || {}).slice(0, 60),
               startTime: Date.now(),
             };
+            this.currentToolPartialResult = "";
             this.statusText = `Executing ${event.toolName}`;
             this.statusColor = C.yellow;
             this.render();
             break;
 
+          case "tool_execution_update":
+            if (this.currentTool) {
+              this.currentToolPartialResult = event.partialResult?.content?.[0]?.text || "";
+              this.renderThrottled();
+            }
+            break;
+
           case "tool_execution_end": {
-            const content = event.result?.content?.map((c: any) => c.text || "").join("") || "";
-            this.messages.push({
-              role: "tool",
-              content: content.slice(0, 500),
-              timestamp: Date.now(),
-              name: event.toolName,
-              duration: event.duration,
-              isError: event.isError || false,
-            });
+            const startTime = this.toolExecutionStarts.get(event.toolCallId);
+            const duration = startTime
+              ? ((Date.now() - startTime) / 1000).toFixed(1) + "s"
+              : "";
+            this.toolExecutionStarts.delete(event.toolCallId);
             this.currentTool = null;
+            this.currentToolPartialResult = "";
             this.statusText = `${event.toolName} complete`;
             this.statusColor = event.isError ? C.red : C.green;
             this.render();
@@ -512,8 +535,6 @@ export class TerminalMode {
           }
 
           case "agent_end":
-            // Only add assistant message from streaming accumulation (already displayed during stream)
-            // Do NOT also extract from event.messages - that would duplicate
             if (this.currentAssistantText) {
               this.messages.push({
                 role: "assistant",
@@ -521,6 +542,7 @@ export class TerminalMode {
                 timestamp: Date.now(),
               });
             }
+            this.currentToolCalls = [];
             break;
 
           case "error":
@@ -548,6 +570,9 @@ export class TerminalMode {
     this.currentTool = null;
     this.currentAssistantText = "";
     this.currentThinkingText = "";
+    this.currentToolCalls = [];
+    this.currentToolPartialResult = "";
+    this.toolExecutionStarts.clear();
     this.statusText = "Ready";
     this.statusColor = C.green;
     this.render();
@@ -558,6 +583,7 @@ export class TerminalMode {
 
     // Initialize pi theme
     initTheme();
+    this.theme = getMarkdownTheme();
 
     // Initialize session
     this.session = await createPiSession({
@@ -568,18 +594,15 @@ export class TerminalMode {
     });
 
     // Setup terminal
-    this.clearScreen();
+    process.stdout.write("\x1b[2J\x1b[H");
     this.hideCursor();
     this.setRawMode(true);
 
-    // Welcome message
-    const sessionFile = this.session.sessionManager.getSessionFile();
     this.messages.push({
       role: "system",
-      content: `DeepSeek Agent [${this.options.modelType}] - Terminal Mode\n` +
-        `Thinking: ${this.options.thinkingEnabled ? "ON" : "OFF"} | Max rounds: ${this.options.maxRounds}\n` +
-        `Session: ${sessionFile || "in-memory"}\n` +
-        `Commands: /clear, /new, /quit`,
+      content: `DeepSeek Agent [${this.options.modelType}] — Terminal Mode\n` +
+        `Thinking: ${this.options.thinkingEnabled ? "ON" : "OFF"}  Max rounds: ${this.options.maxRounds}\n` +
+        `Commands: /clear /new /quit`,
       timestamp: Date.now(),
     });
 
@@ -598,7 +621,6 @@ export class TerminalMode {
       }
     };
 
-    // Handle resize
     const onResize = () => {
       if (this.running) {
         const { cols, rows } = this.getSize();

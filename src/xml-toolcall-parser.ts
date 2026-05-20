@@ -14,9 +14,15 @@ export interface ToolCall {
 type Frame =
   | { type: 'tool_calls' }
   | { type: 'invoke'; name: string; params: Record<string, string> }
-  | { type: 'parameter'; name: string };
+  | { type: 'parameter'; name: string }
+  | { type: 'tool_call'; name: string; body: string; params: Record<string, string> }
+  | { type: 'param'; name: string }
+  | { type: 'pending_attr_tool'; name: string; attrs: Record<string, string> };
 
 const DSML_WRAPPERS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '｜｜DSML｜｜tool_calls', '｜｜DSML｜｜function_calls', '｜｜DSML｜｜pi-tool-calls', '_calls']);
+
+// Tags that are clearly wrapper/container tags, not tool calls
+const CONTAINER_TAGS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '_calls', 'response', 'answer']);
 
 function getAttr(tag: Tag, attrName: string): string | undefined {
   if (!tag.attributes) return undefined;
@@ -24,6 +30,17 @@ function getAttr(tag: Tag, attrName: string): string | undefined {
     if (attr.name?.value === attrName) return attr.value?.value;
   }
   return undefined;
+}
+
+function getAllAttrs(tag: Tag): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  if (!tag.attributes) return attrs;
+  for (const attr of tag.attributes) {
+    if (attr.name?.value) {
+      attrs[attr.name.value] = attr.value?.value || '';
+    }
+  }
+  return attrs;
 }
 
 export class XmlToolCallParser {
@@ -54,7 +71,6 @@ export class XmlToolCallParser {
     switch (event) {
       case SaxEventType.OpenTag: {
         const name = detail.name;
-        // Handle both bare tags and DSML-prefixed tags (e.g., "｜｜DSML｜｜invoke")
         const bareName = name.replace(/^｜｜DSML｜｜/, '');
         if (DSML_WRAPPERS.has(name)) {
           this.stack.push({ type: 'tool_calls' });
@@ -64,6 +80,17 @@ export class XmlToolCallParser {
         } else if (bareName === 'parameter') {
           const paramName = getAttr(detail, 'name') || '';
           this.stack.push({ type: 'parameter', name: paramName });
+        } else if (bareName === 'tool_call') {
+          const tcName = getAttr(detail, 'name') || '';
+          this.stack.push({ type: 'tool_call', name: tcName, body: '', params: {} });
+        } else if (bareName === 'param') {
+          const paramName = getAttr(detail, 'name') || '';
+          this.stack.push({ type: 'param', name: paramName });
+        } else if (!CONTAINER_TAGS.has(bareName) && bareName.includes('_')) {
+          // Likely a tool call in <tool_name attr="value"> format
+          // Store as pending until we see if it's self-closing
+          const attrs = getAllAttrs(detail);
+          this.stack.push({ type: 'pending_attr_tool', name: bareName, attrs });
         }
         break;
       }
@@ -75,6 +102,16 @@ export class XmlToolCallParser {
           if (top.type === 'parameter' && parent.type === 'invoke') {
             parent.params[top.name] = (parent.params[top.name] || '') + value;
           }
+          if (top.type === 'parameter' && parent.type === 'tool_call') {
+            parent.params[top.name] = (parent.params[top.name] || '') + value;
+          }
+          if (top.type === 'param' && parent.type === 'tool_call') {
+            parent.params[top.name] = (parent.params[top.name] || '') + value;
+          }
+        }
+        const topFrame = this.stack[this.stack.length - 1];
+        if (topFrame && topFrame.type === 'tool_call') {
+          topFrame.body += value;
         }
         break;
       }
@@ -95,13 +132,54 @@ export class XmlToolCallParser {
               break;
             }
           }
+        } else if (bareName === 'tool_call') {
+          while (this.stack.length > 0) {
+            const frame = this.stack.pop()!;
+            if (frame.type === 'tool_call') {
+              if (frame.name) {
+                let args: Record<string, unknown>;
+                // Prefer params collected from <param> children
+                if (Object.keys(frame.params).length > 0) {
+                  args = {};
+                  for (const [k, v] of Object.entries(frame.params)) {
+                    try { args[k] = JSON.parse(v); } catch { args[k] = v; }
+                  }
+                } else {
+                  try {
+                    args = JSON.parse(frame.body.trim());
+                  } catch {
+                    args = { raw: frame.body.trim() };
+                  }
+                }
+                this.results.push({ name: frame.name, arguments: args });
+              }
+              break;
+            }
+          }
+        } else if (bareName === 'param') {
+          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'param') {
+            this.stack.pop();
+          }
         } else if (bareName === 'parameter') {
           if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'parameter') {
             this.stack.pop();
           }
+          // Also handle parameter inside tool_call
+          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'tool_call') {
+            // parameter closed, already popped above or was inside tool_call
+          }
         } else if (DSML_WRAPPERS.has(name)) {
           if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'tool_calls') {
             this.stack.pop();
+          }
+        } else if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'pending_attr_tool') {
+          const frame = this.stack.pop()! as Extract<Frame, { type: 'pending_attr_tool' }>;
+          if (frame.name && Object.keys(frame.attrs).length > 0) {
+            const args: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(frame.attrs)) {
+              try { args[k] = JSON.parse(v); } catch { args[k] = v; }
+            }
+            this.results.push({ name: frame.name, arguments: args });
           }
         }
         break;

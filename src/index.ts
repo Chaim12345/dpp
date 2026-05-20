@@ -49,6 +49,11 @@ async function runOneShot(prompt: string): Promise<void> {
   agent.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       process.stdout.write(event.assistantMessageEvent.delta);
+    } else if (event.type === "tool_execution_start") {
+      process.stdout.write(`\n\x1b[90m⚙ ${event.toolName}(...)\x1b[0m\n`);
+    } else if (event.type === "tool_execution_end") {
+      const text = event.result.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+      process.stdout.write(`\x1b[90m→ ${text.slice(0, 150)}${text.length > 150 ? '...' : ''}\x1b[0m\n\n`);
     }
   });
   await agent.prompt(prompt);
@@ -69,6 +74,11 @@ async function runRepl(): Promise<void> {
     a.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         process.stdout.write(event.assistantMessageEvent.delta);
+      } else if (event.type === "tool_execution_start") {
+        process.stdout.write(`\n\x1b[90m⚙ ${event.toolName}(...)\x1b[0m\n`);
+      } else if (event.type === "tool_execution_end") {
+        const text = event.result.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+        process.stdout.write(`\x1b[90m→ ${text.slice(0, 150)}${text.length > 150 ? '...' : ''}\x1b[0m\n\n`);
       }
     });
   }
