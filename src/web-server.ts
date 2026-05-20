@@ -1,9 +1,15 @@
 // ── DeepSeek Agent Web UI Server ──────────────────────
 // Bun HTTP server serving a single-page web UI.
 // POST /api/chat → starts PiAgentLoop, streams events as SSE.
-// Supports multiple conversations, each mapped to a DeepSeek chat session.
+// Uses pi's SessionManager, AuthStorage, SettingsManager for persistence.
 
 import { PiAgentLoop } from "./pi-agent-loop.js";
+import {
+  AuthStorage,
+  SessionManager,
+  SettingsManager,
+  getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 const PORT = parseInt(process.env.PORT || "3456", 10);
 
 // ── Configuration ─────────────────────────────────────
@@ -15,6 +21,14 @@ const MAX_CONVERSATIONS = parseInt(process.env.MAX_CONVERSATIONS || "50", 10);
 
 const HTML = await Bun.file(import.meta.dirname + "/../public/index.html").text();
 
+// ── Pi Session Management ─────────────────────────────
+// Use pi's SessionManager for persistent sessions, AuthStorage for credentials,
+// and SettingsManager for configuration.
+
+const authStorage = AuthStorage.create();
+const settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
+const sessionManager = SessionManager.create(process.cwd());
+
 // ── Conversation Management ───────────────────────────
 interface Conversation {
   id: string;
@@ -23,6 +37,7 @@ interface Conversation {
   lastUsedAt: number;
   messageCount: number;
   activeRun: boolean;
+  sessionFile?: string;
 }
 
 const conversations = new Map<string, Conversation>();
@@ -69,13 +84,14 @@ async function createConversation(modelType?: string, thinkingEnabled?: boolean)
     lastUsedAt: Date.now(),
     messageCount: 0,
     activeRun: false,
+    sessionFile: sessionManager.getSessionFile() || undefined,
   };
   conversations.set(id, conv);
   return conv;
 }
 
-function listConversations(): Array<{ id: string; createdAt: number; lastUsedAt: number; messageCount: number; activeRun: boolean }> {
-  const result: Array<{ id: string; createdAt: number; lastUsedAt: number; messageCount: number; activeRun: boolean }> = [];
+function listConversations(): Array<{ id: string; createdAt: number; lastUsedAt: number; messageCount: number; activeRun: boolean; sessionFile?: string }> {
+  const result: Array<{ id: string; createdAt: number; lastUsedAt: number; messageCount: number; activeRun: boolean; sessionFile?: string }> = [];
   for (const [id, conv] of conversations) {
     result.push({
       id: conv.id,
@@ -83,6 +99,7 @@ function listConversations(): Array<{ id: string; createdAt: number; lastUsedAt:
       lastUsedAt: conv.lastUsedAt,
       messageCount: conv.messageCount,
       activeRun: conv.activeRun,
+      sessionFile: conv.sessionFile,
     });
   }
   return result.sort((a, b) => b.lastUsedAt - a.lastUsedAt);
@@ -137,6 +154,16 @@ function handleHealth(): Response {
     idleTimeoutMs: IDLE_TIMEOUT_MS,
     heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
     agentInitialized: conversations.size > 0,
+    sessionManager: {
+      sessionFile: sessionManager.getSessionFile(),
+      sessionId: sessionManager.getSessionId(),
+      entryCount: sessionManager.getEntries().length,
+    },
+    settings: {
+      defaultModel: settingsManager.getDefaultModel(),
+      defaultProvider: settingsManager.getDefaultProvider(),
+      thinkingLevel: settingsManager.getDefaultThinkingLevel(),
+    },
     timestamp: Date.now(),
   });
 }
@@ -152,6 +179,43 @@ function handleConnectionInfo(): Response {
   });
 }
 
+// ── Settings endpoint ─────────────────────────────────
+async function handleGetSettings(): Promise<Response> {
+  return jsonResponse({
+    defaultModel: settingsManager.getDefaultModel(),
+    defaultProvider: settingsManager.getDefaultProvider(),
+    thinkingLevel: settingsManager.getDefaultThinkingLevel(),
+    compactionEnabled: settingsManager.getCompactionEnabled(),
+    theme: settingsManager.getTheme(),
+    showImages: settingsManager.getShowImages(),
+    hideThinkingBlock: settingsManager.getHideThinkingBlock(),
+    shellPath: settingsManager.getShellPath(),
+  });
+}
+
+async function handleUpdateSettings(req: Request): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (body.defaultModel) settingsManager.setDefaultModel(String(body.defaultModel));
+  if (body.defaultProvider) settingsManager.setDefaultProvider(String(body.defaultProvider));
+  if (body.thinkingLevel) settingsManager.setDefaultThinkingLevel(String(body.thinkingLevel));
+  if (typeof body.compactionEnabled === "boolean") settingsManager.setCompactionEnabled(body.compactionEnabled);
+  if (body.theme) settingsManager.setTheme(String(body.theme));
+  if (typeof body.showImages === "boolean") settingsManager.setShowImages(body.showImages);
+  if (typeof body.hideThinkingBlock === "boolean") settingsManager.setHideThinkingBlock(body.hideThinkingBlock);
+  if (body.shellPath) settingsManager.setShellPath(String(body.shellPath));
+
+  await settingsManager.flush();
+
+  return jsonResponse({ status: "updated" });
+}
+
+// ── Chat endpoint ─────────────────────────────────────
 async function handleChat(req: Request): Promise<Response> {
   resetIdleTimeout();
 
@@ -182,6 +246,13 @@ async function handleChat(req: Request): Promise<Response> {
 
   conv.lastUsedAt = Date.now();
   conv.messageCount++;
+
+  // Record user message in pi session
+  sessionManager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: message }],
+    timestamp: Date.now(),
+  });
 
   // SSE stream with heartbeat and robust error handling
   let heartbeatTimer: Timer | null = null;
@@ -329,6 +400,23 @@ async function handleChat(req: Request): Promise<Response> {
             break;
 
           case "agent_end":
+            // Record assistant message in pi session
+            const msgs = ev.messages || [];
+            for (const m of msgs) {
+              if (m.role === "assistant") {
+                const text = typeof m.content === "string"
+                  ? m.content
+                  : m.content?.map((c: any) => c.type === "text" ? c.text : "").join("") || "";
+                if (text) {
+                  sessionManager.appendMessage({
+                    role: "assistant",
+                    content: [{ type: "text", text }],
+                    timestamp: Date.now(),
+                  });
+                }
+              }
+            }
+
             // Ensure stream_end is sent if not already
             send("stream_end", { fullText: assistantText || "" });
             send("turn_complete", {
@@ -395,70 +483,21 @@ async function handleChat(req: Request): Promise<Response> {
   });
 }
 
-// Return conversation ID in response
-async function handleChatWithConvId(req: Request): Promise<Response> {
-  const chatResponse = await handleChat(req);
-  // The conversation ID is returned in the SSE stream as part of the done event
-  // For now, we'll add it to headers
-  return chatResponse;
-}
-
-async function handleSettings(req: Request): Promise<Response> {
-  resetIdleTimeout();
-
-  let body: { modelType?: string; thinkingEnabled?: boolean; maxRounds?: number };
-  try {
-    body = await req.json();
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
-  }
-
-  // Apply settings to all active conversations
-  for (const conv of conversations.values()) {
-    if (body.modelType) conv.loop.modelType = body.modelType;
-    if (body.thinkingEnabled !== undefined) conv.loop.thinkingEnabled = body.thinkingEnabled;
-    if (body.maxRounds) conv.loop.maxRounds = body.maxRounds;
-  }
-
-  // Return settings from first conversation or defaults
-  const firstConv = conversations.values().next().value;
+// ── Session Management Endpoints ──────────────────────
+function handleListSessions(): Response {
+  const sessions = sessionManager.getEntries();
+  const tree = sessionManager.getTree();
   return jsonResponse({
-    modelType: firstConv?.loop.modelType || body.modelType || "expert",
-    thinkingEnabled: firstConv?.loop.thinkingEnabled ?? body.thinkingEnabled ?? false,
-    maxRounds: firstConv?.loop.maxRounds || body.maxRounds || 25,
+    sessionFile: sessionManager.getSessionFile(),
+    sessionId: sessionManager.getSessionId(),
+    entryCount: sessions.length,
+    leafId: sessionManager.getLeafId(),
   });
 }
 
-// ── Conversation Management Endpoints ─────────────────
-function handleListConversations(): Response {
-  return jsonResponse({ conversations: listConversations() });
-}
-
-function handleDeleteConversation(req: Request): Response {
-  const url = new URL(req.url);
-  const id = url.searchParams.get("id");
-  if (!id) {
-    return jsonResponse({ error: "conversation id is required" }, 400);
-  }
-  if (deleteConversation(id)) {
-    return jsonResponse({ status: "deleted", id });
-  }
-  return jsonResponse({ error: "conversation not found or is active" }, 404);
-}
-
-function handleClearConversation(req: Request): Response {
-  const url = new URL(req.url);
-  const id = url.searchParams.get("id");
-  if (!id) {
-    return jsonResponse({ error: "conversation id is required" }, 400);
-  }
-  const conv = getConversation(id);
-  if (conv && !conv.activeRun) {
-    conv.loop.clearMessages();
-    conv.messageCount = 0;
-    return jsonResponse({ status: "cleared", id });
-  }
-  return jsonResponse({ error: "conversation not found or is active" }, 404);
+function handleSessionTree(): Response {
+  const tree = sessionManager.getTree();
+  return jsonResponse({ tree });
 }
 
 // ── CORS preflight ────────────────────────────────────
@@ -502,7 +541,10 @@ try {
         return handleChat(req);
       }
       if (req.method === "POST" && url.pathname === "/api/settings") {
-        return handleSettings(req);
+        return handleUpdateSettings(req);
+      }
+      if (req.method === "GET" && url.pathname === "/api/settings") {
+        return handleGetSettings();
       }
       if (req.method === "POST" && url.pathname === "/api/clear") {
         resetIdleTimeout();
@@ -518,13 +560,40 @@ try {
 
       // Conversation management routes
       if (req.method === "GET" && url.pathname === "/api/conversations") {
-        return handleListConversations();
+        return jsonResponse({ conversations: listConversations() });
       }
       if (req.method === "DELETE" && url.pathname === "/api/conversations") {
-        return handleDeleteConversation(req);
+        const deleteUrl = new URL(req.url);
+        const id = deleteUrl.searchParams.get("id");
+        if (!id) {
+          return jsonResponse({ error: "conversation id is required" }, 400);
+        }
+        if (deleteConversation(id)) {
+          return jsonResponse({ status: "deleted", id });
+        }
+        return jsonResponse({ error: "conversation not found or is active" }, 404);
       }
       if (req.method === "POST" && url.pathname === "/api/conversations/clear") {
-        return handleClearConversation(req);
+        const clearUrl = new URL(req.url);
+        const id = clearUrl.searchParams.get("id");
+        if (!id) {
+          return jsonResponse({ error: "conversation id is required" }, 400);
+        }
+        const conv = getConversation(id);
+        if (conv && !conv.activeRun) {
+          conv.loop.clearMessages();
+          conv.messageCount = 0;
+          return jsonResponse({ status: "cleared", id });
+        }
+        return jsonResponse({ error: "conversation not found or is active" }, 404);
+      }
+
+      // Session management routes
+      if (req.method === "GET" && url.pathname === "/api/sessions") {
+        return handleListSessions();
+      }
+      if (req.method === "GET" && url.pathname === "/api/sessions/tree") {
+        return handleSessionTree();
       }
 
       // Static files
@@ -551,6 +620,8 @@ try {
 
   console.log(`Web UI running at http://localhost:${server.port}`);
   console.log(`Idle timeout: ${IDLE_TIMEOUT_MS / 1000}s | Heartbeat: ${HEARTBEAT_INTERVAL_MS / 1000}s | Request timeout: ${REQUEST_TIMEOUT_MS / 1000}s`);
+  console.log(`Session file: ${sessionManager.getSessionFile() || "(in-memory)"}`);
+  console.log(`Agent dir: ${getAgentDir()}`);
 } catch (err) {
   console.error("[FATAL] Failed to start server:", err);
   process.exit(1);

@@ -9,7 +9,8 @@
     "repl": "bun run src/agent-repl.ts",
     "test-auth": "bun run src/web-api-client.ts",
     "agent-native": "bun run src/agent-native.ts",
-    "web": "bun run src/web-server.ts"
+    "web": "bun run src/web-server.ts",
+    "tui": "bun run src/terminal-mode.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.75.3",
