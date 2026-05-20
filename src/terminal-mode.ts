@@ -287,7 +287,7 @@ export class TerminalMode {
     }
 
     // ── Output ──
-    process.stdout.write("\x1b[H"); // Home cursor
+    process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and home cursor
 
     // Header
     process.stdout.write(truncateToWidth(header, cols) + "\n");
