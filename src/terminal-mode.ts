@@ -11,6 +11,7 @@ import {
   Input,
   SelectList,
   Spacer,
+  StdinBuffer,
   setCellDimensions,
   truncateToWidth,
   parseKey,
@@ -334,29 +335,27 @@ export class TerminalMode {
     this.lastRenderHeight = rows;
   }
 
-  private handleKey(data: Buffer): boolean {
-    const key = parseKey(data);
-
+  private handleKey(key: string): boolean {
     // Ctrl+C
-    if (key === Key.CtrlC || data.toString() === "\u0003") {
+    if (key === "\u0003" || key === Key.CtrlC) {
       return false;
     }
 
     // Ctrl+L - clear screen
-    if (key === Key.CtrlL || data.toString() === "\x0c") {
+    if (key === "\x0c" || key === Key.CtrlL) {
       this.clearScreen();
       this.render();
       return true;
     }
 
     // Escape - clear input
-    if (key === Key.Escape || data.toString() === "\x1b") {
+    if (key === "\x1b" || key === Key.Escape) {
       this.inputBuffer = "";
       return true;
     }
 
     // Enter
-    if (key === Key.Enter || data.toString() === "\r" || data.toString() === "\n") {
+    if (key === "\r" || key === "\n" || key === Key.Enter) {
       if (this.inputBuffer.trim() && !this.isStreaming) {
         const text = this.inputBuffer.trim();
         this.inputBuffer = "";
@@ -383,15 +382,24 @@ export class TerminalMode {
     }
 
     // Backspace
-    if (key === Key.Backspace || data.toString() === "\x7f" || data.toString() === "\b") {
+    if (key === "\x7f" || key === "\b" || key === Key.Backspace) {
       this.inputBuffer = this.inputBuffer.slice(0, -1);
       return true;
     }
 
+    // Arrow keys and other special keys (ignore for now)
+    if (key.length > 1 && key !== "\t") {
+      return true;
+    }
+
+    // Tab
+    if (key === "\t") {
+      return true;
+    }
+
     // Regular printable character
-    const ch = data.toString();
-    if (ch.length === 1 && ch >= " ") {
-      this.inputBuffer += ch;
+    if (key.length === 1 && key >= " ") {
+      this.inputBuffer += key;
       return true;
     }
 
@@ -564,10 +572,12 @@ export class TerminalMode {
 
     this.render();
 
-    // Input handling
-    const onData = (data: Buffer) => {
+    // Input handling using pi-tui StdinBuffer
+    const stdinBuffer = new StdinBuffer();
+
+    const onKey = (key: string) => {
       if (!this.running) return;
-      const shouldContinue = this.handleKey(data);
+      const shouldContinue = this.handleKey(key);
       if (!shouldContinue) {
         this.running = false;
       } else {
@@ -584,7 +594,8 @@ export class TerminalMode {
       }
     };
 
-    process.stdin.on("data", onData);
+    stdinBuffer.on("data", onKey);
+    process.stdin.on("data", (data: Buffer) => stdinBuffer.process(data));
     process.stdout.on("resize", onResize);
 
     // Wait for exit
@@ -600,7 +611,8 @@ export class TerminalMode {
     });
 
     // Cleanup
-    process.stdin.off("data", onData);
+    stdinBuffer.off("data", onKey);
+    stdinBuffer.destroy();
     process.stdout.off("resize", onResize);
     this.setRawMode(false);
     this.showCursor();
