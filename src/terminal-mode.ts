@@ -61,6 +61,20 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
 
+function cleanAssistantText(text: string): string {
+  // Remove [Assistant] prefixes
+  let cleaned = text.replace(/\[Assistant\]\s*/g, "");
+  // Remove [Tool:name] markers with their JSON args
+  cleaned = cleaned.replace(/\[Tool:\w+\]\s*\{[^}]*\}\s*/g, "");
+  // Remove standalone JSON objects on their own lines (tool call args)
+  cleaned = cleaned.replace(/^\s*\{[^}]*\}\s*$/gm, "");
+  // Remove "Calling:" lines
+  cleaned = cleaned.replace(/\*\*Calling:\*\*\s*`[^`]*`\s*/g, "");
+  // Clean up multiple blank lines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+  return cleaned.trim();
+}
+
 function visibleLength(text: string): number {
   return stripAnsi(text).length;
 }
@@ -219,7 +233,8 @@ export class TerminalMode {
         }
         contentLines.push("");
       } else if (msg.role === "assistant") {
-        const wrapped = wrapText(msg.content, cols - 2);
+        const cleaned = cleanAssistantText(msg.content);
+        const wrapped = wrapText(cleaned, cols - 2);
         for (const line of wrapped) {
           contentLines.push("  " + line);
         }
@@ -272,7 +287,8 @@ export class TerminalMode {
 
     // Accumulating assistant text during streaming
     if (this.isStreaming && this.currentAssistantText) {
-      const wrapped = wrapText(this.currentAssistantText, cols - 2);
+      const cleaned = cleanAssistantText(this.currentAssistantText);
+      const wrapped = wrapText(cleaned, cols - 2);
       // Show last portion that fits
       const availableRows = contentRows - contentLines.length - 2;
       const showLines = wrapped.slice(-Math.max(1, availableRows));
@@ -301,7 +317,9 @@ export class TerminalMode {
     }
 
     // ── Output ──
-    process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and home cursor
+    // Use cursor positioning + clear-to-end-of-screen to prevent scroll/ghost
+    process.stdout.write("\x1b[H"); // Home cursor
+    process.stdout.write("\x1b[J"); // Clear from cursor to end of screen
 
     // Header
     process.stdout.write(truncateToWidth(header, cols) + "\n");
@@ -499,7 +517,7 @@ export class TerminalMode {
             if (this.currentAssistantText) {
               this.messages.push({
                 role: "assistant",
-                content: this.currentAssistantText,
+                content: cleanAssistantText(this.currentAssistantText),
                 timestamp: Date.now(),
               });
             }
