@@ -485,19 +485,49 @@ async function handleChat(req: Request): Promise<Response> {
 
 // ── Session Management Endpoints ──────────────────────
 function handleListSessions(): Response {
-  const sessions = sessionManager.getEntries();
+  const entries = sessionManager.getEntries();
   const tree = sessionManager.getTree();
+  const branch = sessionManager.getBranch();
   return jsonResponse({
     sessionFile: sessionManager.getSessionFile(),
     sessionId: sessionManager.getSessionId(),
-    entryCount: sessions.length,
+    entryCount: entries.length,
     leafId: sessionManager.getLeafId(),
+    branchCount: branch.length,
+    header: sessionManager.getHeader(),
   });
 }
 
 function handleSessionTree(): Response {
   const tree = sessionManager.getTree();
   return jsonResponse({ tree });
+}
+
+function handleSessionEntries(): Response {
+  const entries = sessionManager.getEntries();
+  const branch = sessionManager.getBranch();
+  return jsonResponse({
+    entries: entries.slice(-50), // Last 50 entries
+    branch: branch.slice(-20),
+    total: entries.length,
+  });
+}
+
+function handleSessionStats(): Response {
+  const entries = sessionManager.getEntries();
+  const branch = sessionManager.getBranch();
+  const userMsgs = entries.filter(e => e.type === "message" && e.role === "user").length;
+  const assistantMsgs = entries.filter(e => e.type === "message" && e.role === "assistant").length;
+  const toolCalls = entries.filter(e => e.type === "tool_call").length;
+  return jsonResponse({
+    sessionFile: sessionManager.getSessionFile(),
+    sessionId: sessionManager.getSessionId(),
+    totalEntries: entries.length,
+    userMessages: userMsgs,
+    assistantMessages: assistantMsgs,
+    toolCalls: toolCalls,
+    branchLength: branch.length,
+  });
 }
 
 // ── CORS preflight ────────────────────────────────────
@@ -594,6 +624,12 @@ try {
       }
       if (req.method === "GET" && url.pathname === "/api/sessions/tree") {
         return handleSessionTree();
+      }
+      if (req.method === "GET" && url.pathname === "/api/sessions/entries") {
+        return handleSessionEntries();
+      }
+      if (req.method === "GET" && url.pathname === "/api/sessions/stats") {
+        return handleSessionStats();
       }
 
       // Static files
