@@ -295,10 +295,8 @@ export class TerminalMode {
 
       // Show streaming partial result if available (e.g. edit diff, bash output)
       if (this.currentToolPartialResult) {
-        const partialLines = this.currentToolPartialResult.split("\n").slice(0, 8);
-        for (const line of partialLines) {
-          content.addChild(new Text(s("    " + line, C.gray, C.dim), 1, 0));
-        }
+        const previewText = this.currentToolPartialResult.split("\n").slice(0, 8).join("\n");
+        content.addChild(new Text(s("    " + previewText, C.gray, C.dim), 1, 0));
         if (this.currentToolPartialResult.split("\n").length > 8) {
           content.addChild(new Text(s("    ... (streaming)", C.gray, C.dim), 1, 0));
         }

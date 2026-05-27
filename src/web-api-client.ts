@@ -415,7 +415,7 @@ export function parseSessionCreateResponse(json: any): string {
 export async function createSession(
   token: string,
   cookieHeader: string | null,
-  modelType = "default"
+  modelType = "expert"
 ): Promise<string> {
   const headers = buildBaseHeaders(token, cookieHeader);
   const resp = await fetch(`${DEEPSEEK_URL}/api/v0/chat_session/create`, {
@@ -455,7 +455,7 @@ export async function ensureSession(
     authToken: string | null;
     cookieHeader: string | null;
   },
-  modelType = "default"
+  modelType = "expert"
 ): Promise<string> {
   if (state.chatSessionId) return state.chatSessionId;
 

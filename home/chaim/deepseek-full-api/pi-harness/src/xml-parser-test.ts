@@ -1,0 +1,1 @@
+// Re-export the XML parser for backward compatibilityexport { batchParser, StreamingXmlParser, ensureWasmParser, parseToolCalls, parseToolCallsSync } from "./xml-toolcall-parser";

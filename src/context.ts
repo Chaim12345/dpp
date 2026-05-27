@@ -1,7 +1,7 @@
-export const MAX_FILE_CHARS = 8_000;
-export const MAX_MESSAGE_CHARS = 6_000;
-export const MAX_TURNS = 25;
-export const COMPACTION_THRESHOLD = 0.8;
+export const MAX_FILE_CHARS = 32_000;
+export const MAX_MESSAGE_CHARS = 24_000;
+export const MAX_TURNS = 100;
+export const COMPACTION_THRESHOLD = 0.9;
 
 export interface ToolCallFingerprint {
   name: string;
@@ -12,7 +12,7 @@ function hashArgs(args: Record<string, unknown>): string {
   let s = "";
   const keys = Object.keys(args).sort();
   for (const k of keys) {
-    s += k + ":" + String(args[k]).slice(0, 100) + "|";
+    s += k + ":" + String(args[k]).slice(0, 300) + "|";
   }
   return s;
 }

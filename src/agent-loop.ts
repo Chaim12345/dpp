@@ -40,7 +40,7 @@ function buildPrompt(
   return parts.join("\n\n");
 }
 
-const MAX_CONTEXT_TOKENS = 16_000;
+const MAX_CONTEXT_TOKENS = 256_000;
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<void> {
   const maxRounds = options.maxRounds ?? MAX_TURNS;

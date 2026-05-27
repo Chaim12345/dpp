@@ -218,10 +218,7 @@ function buildSectionsContent(): string {
   for (const s of sections) {
     parts.push(renderSectionHeader(s));
     if (!s.collapsed && s.detail) {
-      const lines = s.detail.split("\n");
-      for (const line of lines) {
-        parts.push(`  {${s.color}-fg}${line}{/${s.color}-fg}`);
-      }
+      parts.push(`  {${s.color}-fg}${s.detail}{/${s.color}-fg}`);
     }
   }
   return parts.join("\n");
@@ -247,10 +244,7 @@ export function addSection(title: string, detail: string, color = "cyan", collap
     const header = renderSectionHeader(s);
     scrollback.append(header);
     if (!collapsed && detail) {
-      const lines = detail.split("\n");
-      for (const line of lines) {
-        scrollback.append(`  {${color}-fg}${line}{/${color}-fg}`);
-      }
+      scrollback.append(`  {${color}-fg}${detail}{/${color}-fg}`);
     }
     contentDirty = true;
     debouncedContentUpdate();
@@ -276,10 +270,7 @@ export function appendSection(idx: number, delta: string): void {
   sections[idx].detail += delta;
 
   if (blessedMode) {
-    const lines = delta.split("\n");
-    for (const line of lines) {
-      scrollback.append(`  {${sections[idx].color}-fg}${line}{/${sections[idx].color}-fg}`);
-    }
+    scrollback.append(`  {${sections[idx].color}-fg}${delta}{/${sections[idx].color}-fg}`);
     contentDirty = true;
     debouncedContentUpdate();
   } else {

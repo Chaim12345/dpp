@@ -216,6 +216,7 @@ function createDeepSeekStreamFn(state: DeepSeekStreamState) {
         );
       } catch (err) {
         streamError = err instanceof Error ? err : new Error(String(err));
+        break;
       }
 
       // Build final message

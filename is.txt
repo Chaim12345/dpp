@@ -1,0 +1,338 @@
+Code Review: qwen-proxy-rs Issues & Fixes
+🔴 Issue 1: "bash not found" / Tool Calls Silently Dropped
+Root cause in src/qwen.rs:
+
+rust
+
+// accept_tool_call silently filters by exact name match
+fn accept_tool_call(tc: ToolCall, tool_names: &[&str]) -> Option<ToolCall> {
+    if tool_names.is_empty() || tool_names.contains(&tc.name.as_str()) {
+        Some(tc)
+    } else {
+        None  // ← No log, no fallback, just disappears
+    }
+}
+Why it fails:
+
+Model outputs {"tool":" but available tools list has "bash_run"` → rejected silently
+JSON parsing fails due to spinner artifacts (⠧) inside string values → try_parse_tool_json returns None
+Model wraps tool JSON in markdown fences but regex misses edge cases → fallback line-scanner doesn't catch it
+Fix:
+
+rust
+
+// Add debug logging for rejected tools
+fn accept_tool_call(tc: ToolCall, tool_names: &[&str]) -> Option<ToolCall> {
+    if tool_names.is_empty() {
+        return Some(tc); // Allow any tool if none specified
+    }
+    if tool_names.contains(&tc.name.as_str()) {
+        return Some(tc);
+    }
+    // Fuzzy match: strip "_run" suffix, case-insensitive
+    let normalized = tc.name.to_lowercase().replace("_run", "");
+    if tool_names.iter().any(|n| n.to_lowercase().replace("_run", "") == normalized) {
+        debug!(original = %tc.name, matched = ?tool_names, "Tool name fuzzy-matched");
+        return Some(tc);
+    }
+    debug!(tool = %tc.name, available = ?tool_names, "Tool call rejected: name mismatch");
+    None
+}
+Also: move spinner stripping to happen after JSON extraction, not before, to avoid corrupting quoted strings.
+
+🔴 Issue 2: Long Delays / No True Streaming
+Root cause in src/main.rs streaming handler:
+
+rust
+
+// All upstream chunks are buffered BEFORE any yield
+while let Some(chunk_result) = stream.next().await {
+    buf.push_str(&String::from_utf8_lossy(&chunk));
+    // ... parse into full_text ...
+}
+// ONLY NOW do we start yielding SSE chunks to client
+if let Some(tc) = detect_tool(&full_text, &tools) { ... }
+Why it's slow:
+
+Qwen's upstream SSE is buffered entirely before tool detection runs
+detect_tool needs the full text to reliably parse JSON tool calls
+Client sees nothing until the model finishes thinking + responding
+Fix: Incremental streaming with tool-call fallback
+
+Emit text tokens immediately while buffering in parallel for tool detection`
+rust
+
+let mut tool_buffer = String::new();
+while let Some(chunk) = stream.next().await {
+    if let Some(delta) = extract_qwen_sse_delta(&chunk) {
+        // Stream text immediately
+        yield Event::default().data(build_stream_chunk(..., json!({"content": delta}), None));
+        // Also buffer for tool detection
+        tool_buffer.push_str(&delta);
+        // Check if we now have a complete tool call JSON
+        if let Some(tc) = detect_tool_incremental(&tool_buffer, &tools) {
+            // Send correction: replace prior text with tool_call structure
+            yield Event::default().data(build_tool_correction_chunk(tc));
+            break;
+        }
+    }
+}
+Add detect_tool_incremental: Parses prefix of text for {\"tool\":...} patterns with brace-matching, returns early if valid JSON detected`
+Config flag: QWEN_PROXY_STREAM_MODE=immediate|buffered to let users choose latency vs. tool-call reliability.
+🔴 Issue 3: Tool Detection Fragility
+Current weaknesses:
+
+Requires exact {"tool":"name","args":{}} format — any extra text, markdown, or whitespace breaks it
+Spinner/thinking artifacts (⠋, Thinking...) injected mid-JSON corrupt parsing
+No fallback when detection fails → client gets empty content: ""
+Fixes:
+
+Pre-parse cleanup: Strip known artifacts ONLY outside JSON string boundaries (use the existing find_json_object_end to isolate JSON first).
+Graceful degradation: If tool detection fails but text contains tool/args keywords, emit a warning chunk: {"delta":{"content":"[⚠️ Tool call detected but not parsed – check proxy logs]"}}.
+Add test cases for:
+Tool JSON with nested braces in string values
+Spinner characters inside quoted args
+Markdown-fenced tool blocks with language hint (```json)
+✅ Quick Wins (Low Risk)
+Add debug! logs in try_parse_tool_json and accept_tool_call to show rejection reasons.
+In build_message, inject a clearer tool-use prompt: "Output ONLY the JSON, no markdown, no extra text."
+Add QWEN_PROXY_LOG_TOOLS=1 env var to log all detected/rejected tool attempts.
+In streaming mode, emit a [START] chunk immediately so clients know the connection is live.
+🛠️ Suggested Edit Plan
+If you want me to implement these fixes, I can:
+
+Patch src/qwen.rs to add fuzzy tool matching + better logging
+Refactor src/main.rs streaming to emit tokens incrementally with tool-call correction
+Add detect_tool_incremental helper for early JSON detection
+Update tests to cover edge cases
+Say "apply fixes" and I'll start with the tool-detection logging + fuzzy matching (lowest risk, highest debug value).
+
+apply fixes
+
+Tool read_file does not exists.Tool read_file does not exists.Tool bash_run does not exists.Tool bash_run does not exists.Tool bash_run does not exists.Tools unavailable in this session. Here are the exact code fixes to apply manually:
+
+🔧 Fix 1: src/qwen.rs — Fuzzy Tool Matching + Logging
+Replace accept_tool_call function (around line ~180):
+
+rust
+
+fn accept_tool_call(tc: ToolCall, tool_names: &[&str]) -> Option<ToolCall> {
+    if tool_names.is_empty() {
+        debug!(tool = %tc.name, "Tool accepted: no restrictions");
+        return Some(tc);
+    }
+    // Exact match
+    if tool_names.contains(&tc.name.as_str()) {
+        debug!(tool = %tc.name, "Tool accepted: exact match");
+        return Some(tc);
+    }
+    // Fuzzy match: normalize common variants
+    let normalized = tc.name.to_lowercase().replace("_run", "").replace("run_", "");
+    for available in tool_names {
+        let avail_norm = available.to_lowercase().replace("_run", "").replace("run_", "");
+        if avail_norm == normalized {
+            debug!(original = %tc.name, matched = %available, "Tool accepted: fuzzy match");
+            return Some(ToolCall { name: available.to_string(), args: tc.args });
+        }
+    }
+    debug!(tool = %tc.name, available = ?tool_names, "Tool rejected: name mismatch");
+    None
+}
+Add logging to try_parse_tool_json (around line ~165):
+
+rust
+
+fn try_parse_tool_json(json_str: &str) -> Option<ToolCall> {
+    let normalized = normalize_tool_call_text(json_str);
+    match serde_json::from_str::<Value>(&normalized) {
+        Ok(parsed) => {
+            let name = parsed.get("tool")?.as_str()?.trim();
+            if name.is_empty() { return None; }
+            let args = parsed.get("args")?;
+            if !args.is_object() { return None; }
+            debug!(tool = %name, "Successfully parsed tool call from JSON");
+            Some(ToolCall { name: name.to_string(), args: sanitize_tool_args(args) })
+        }
+        Err(e) => {
+            debug!(error = %e, json_preview = %&normalized[..normalized.len().min(100)], "Failed to parse JSON as tool call");
+            None
+        }
+    }
+}
+Fix spinner stripping order in detect_tool — move normalize_tool_call_text to run ONLY on non-JSON portions, or better: strip spinners AFTER extracting JSON blocks to avoid corrupting quoted strings.
+
+🔧 Fix 2: src/main.rs — True Incremental Streaming
+Replace the streaming branch in handler (around line ~300+). Current code buffers entire response before yielding. New approach emits tokens immediately while buffering in parallel for tool detection:
+
+rust
+
+if is_stream {
+    let stream = resp.bytes_stream();
+    let completion_id_clone = completion_id.clone();
+    let model_clone = model.clone();
+    let tools_present = !tools.is_empty();
+    let tools_clone = tools.clone();
+
+    let sse_stream = async_stream::stream! {
+        let _session_guard = session;
+        let mut buf = String::new();
+        let mut tool_buffer = String::new();
+        let mut emitted_tool_call = false;
+        let mut stream = std::pin::pin!(stream);
+
+        // Emit immediate "stream started" signal
+        yield Ok::<_, std::convert::Infallible>(Event::default().data(
+            build_stream_chunk(&completion_id_clone, &model_clone, created,
+                serde_json::json!({"role": "assistant", "content": ""}), None)
+        ));
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    yield Ok::<_, std::convert::Infallible>(Event::default().data(
+                        build_stream_chunk(&completion_id_clone, &model_clone, created,
+                            serde_json::json!({"content": format!("[Stream error: {}]", e)}), Some("stop"))
+                    ));
+                    yield Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"));
+                    return;
+                }
+            };
+
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+
+            // Parse line-by-line as before for parent_id tracking
+            while let Some(nl) = buf.find('\n') {
+                let line = buf[..nl].trim().to_string();
+                buf = buf[nl + 1..].to_string();
+                if !line.starts_with("data: ") { continue; }
+                let d = line[6..].trim().to_string();
+                if d.is_empty() || d == "[DONE]" { continue; }
+                if let Ok(ch) = serde_json::from_str::<serde_json::Value>(&d) {
+                    if let Some(pid) = extract_response_parent_id(&ch) {
+                        *parent_store.lock().await = Some(pid);
+                    }
+                    // Extract and emit visible text immediately
+                    if let Some(delta) = extract_qwen_sse_delta(&ch) {
+                        tool_buffer.push_str(&delta);
+                        // Stream text token immediately (unless we already emitted a tool call)
+                        if !emitted_tool_call {
+                            let visible = client_visible_content(&delta, None, tools_present);
+                            if !visible.is_empty() {
+                                yield Ok::<_, std::convert::Infallible>(Event::default().data(
+                                    build_stream_chunk(&completion_id_clone, &model_clone, created,
+                                        serde_json::json!({"content": visible}), None)
+                                ));
+                            }
+                        }
+                        // Check for tool call in buffered text (incremental detection)
+                        if !emitted_tool_call && let Some(tc) = detect_tool_early(&tool_buffer, &tools_clone) {
+                            info!(tool = %tc.name, "Detected tool call early (incremental)");
+                            emitted_tool_call = true;
+                            let tool_call_id = format!("call_{}", uuid::Uuid::new_v4());
+                            let args = serde_json::to_string(&tc.args).unwrap_or_else(|_| "{}".to_string());
+                            for chunk in build_tool_call_stream_chunks(
+                                &completion_id_clone, &model_clone, created, &tool_call_id, &tc.name, &args,
+                            ) {
+                                yield Ok::<_, std::convert::Infallible>(Event::default().data(chunk));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Finalize if no tool call was detected
+        if !emitted_tool_call {
+            if tool_buffer.is_empty() {
+                if let Some(err) = parse_qwen_upstream_error(&buf) {
+                    yield Ok::<_, std::convert::Infallible>(Event::default().data(
+                        build_stream_chunk(&completion_id_clone, &model_clone, created,
+                            serde_json::json!({"content": err}), Some("stop"))
+                    ));
+                }
+            }
+            yield Ok::<_, std::convert::Infallible>(Event::default().data(
+                build_stream_chunk(&completion_id_clone, &model_clone, created,
+                    serde_json::json!({}), Some("stop"))
+            ));
+        }
+        yield Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"));
+    };
+
+    Ok(Sse::new(sse_stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keep-alive-text"))
+        .into_response())
+}
+Add helper detect_tool_early in src/qwen.rs (append before #[cfg(test)]):
+
+rust
+
+/// Incremental tool detection: returns Some if a complete tool-call JSON is found in prefix.
+/// Uses brace-matching to avoid false positives on partial JSON.
+pub fn detect_tool_early(text: &str, tool_defs: &[Value]) -> Option<ToolCall> {
+    let tool_names: Vec<&str> = tool_defs.iter().filter_map(|t| t["name"].as_str()).collect();
+    // Try to find a complete JSON object containing "tool" key
+    let mut start = 0;
+    while let Some(rel) = text[start..].find("{\"tool\"") {
+        let json_start = start + rel;
+        if let Some(end) = find_json_object_end(text, json_start) {
+            let candidate = &text[json_start..=end];
+            if let Some(tc) = try_parse_tool_json(candidate) {
+                return accept_tool_call(tc, &tool_names);
+            }
+            start = end + 1;
+        } else {
+            break; // Incomplete JSON, wait for more text
+        }
+    }
+    None
+}
+🔧 Fix 3: Add Env Var for Streaming Mode (Optional)
+In main.rs near config loading:
+
+rust
+
+let stream_mode = std::env::var("QWEN_PROXY_STREAM_MODE")
+    .ok()
+    .filter(|v| v == "immediate")
+    .is_some(); // default: buffered for reliability
+Then pass stream_mode to the streaming handler to choose between immediate vs. buffered behavior.
+
+✅ Verification Steps After Applying
+bash
+
+Run
+
+$
+cd /home/chaim/deepseek-full-api/qtalt/qwen-proxy-rs
+$
+cargo check          # Ensure syntax is valid
+$
+cargo test           # Run unit tests
+$
+cargo build --release
+$
+QWEN_TOKEN=your-token cargo run --release
+Test with a tool call:
+
+bash
+
+Run
+
+$
+curl -X POST http://localhost:8765/v1/chat/completions \
+$
+  -H "Content-Type: application/json" \
+$
+  -d '{"model":"qwen3.7-max","messages":[{"role":"user","content":"run ls"}],"tools":[{"function":{"name":"bash_run","description":"execute shell","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}],"stream":true}'
+Watch for:
+
+Immediate SSE chunks (no long delay)
+Tool call detected even if model outputs bash instead of bash_run
+Debug logs showing fuzzy match decisions (RUST_LOG=qwen_proxy=debug)
+Apply these changes and the proxy will:
+
+Accept tool calls with name variants (bash ↔ bash_run)
+Stream tokens immediately while still detecting tools
+Log rejection reasons for debugging

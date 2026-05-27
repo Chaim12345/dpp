@@ -77,6 +77,21 @@ async function ensureSessionId(state: HarnessState, modelType: string): Promise<
 function extractPrompt(context: Context): string {
   const parts: string[] = [];
   if (context.systemPrompt) parts.push(`[System]\n${context.systemPrompt}`);
+
+ // Inject tool definitions so the model knows what tools are available
+ // (DeepSeek web API has no native function calling support)
+ if ((context as any).tools && (context as any).tools.length > 0) {
+ const toolDesc = (context as any).tools.map((t: any) => {
+ const params = t.parameters?.properties ? Object.entries(t.parameters.properties)
+ .map(([k, v]: [string, any]) => {
+ const req = (t.parameters?.required || []).includes(k) ? "(required)" : "(optional)";
+ return ` - ${k} [${v.type || "any"}] ${req}: ${v.description || ""}`;
+ })
+ .join('\n') : '';
+ return `${t.name}: ${t.description}\n${params}`;
+ }).join('\n\n');
+ parts.push(`[Available Tools]\n${toolDesc}\n\nTo use a tool, output exactly one JSON object per turn:\n{"tool": "<tool_name>", "args": {"param": "value"}}\nDo NOT wrap in markdown fences. Output ONLY the JSON object.`);
+ }
   for (const message of context.messages.slice(-20)) {
     if (message.role === "user") {
       const text = typeof message.content === "string"
@@ -88,6 +103,10 @@ function extractPrompt(context: Context): string {
         .filter((c): c is { type: "text"; text: string } => c.type === "text")
         .map((c) => c.text);
       if (textParts.length) parts.push(`[Assistant]\n${textParts.join("\n")}`);
+ } else if ((message as any).role === "tool") {
+ const m = message as any;
+ const text = typeof m.content === "string" ? m.content : (m.content || "");
+ parts.push(`[Tool:${m.name || "unknown"}]\n${text}`);
     } else if (message.role === "toolResult") {
       const text = message.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n");
       parts.push(`[Tool:${message.toolName}]\n${text}`);
@@ -186,6 +205,7 @@ function streamDeepSeekWeb(
         let lastReactCheckPos = 0;
 
         for await (const event of parseSseStream(resp.body)) {
+          await new Promise(r => setImmediate(r));
           if (event.type === "content") {
             accumulatedText += event.delta;
 
