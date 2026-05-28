@@ -442,6 +442,8 @@ export class UnifiedAgentLoop {
       "<function_calls>",
       "<function_call",
       "<pi-tool-calls>",
+ "Tool:",
+ "Action:",
     ];
     const endMarkers = [
       "</｜｜DSML｜｜tool_calls>",
@@ -452,6 +454,7 @@ export class UnifiedAgentLoop {
       "</function_calls>",
       "</function_call>",
       "</pi-tool-calls>",
+ "\n\n",
     ];
     const longestMarkerLength = Math.max(
       ...startMarkers.map((marker) => marker.length),
@@ -505,6 +508,8 @@ export class UnifiedAgentLoop {
       "<function_calls>",
       "<function_call",
       "<pi-tool-calls>",
+ "Tool:",
+ "Action:",
       "<｜｜DSML｜｜tool_calls>",
       "<｜｜DSML｜｜invoke",
       "<invoke",

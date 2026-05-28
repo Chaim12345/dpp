@@ -32,6 +32,93 @@ function extractToolParenCalls(text: string): { name: string; arguments: Record<
  return results;
 }
 
+// Markdown format: **Calling:** `name`\n```json\n{...}\n```
+function extractMarkdownToolCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
+ const results: { name: string; arguments: Record<string, unknown> }[] = [];
+ const re = /\*\*Calling:\*\*\s*`(\w+)`\s*\n```(?:json)?\s*\n([\s\S]*?)\n```/g;
+ let match: RegExpExecArray | null;
+ while ((match = re.exec(text)) !== null) {
+  try { results.push({ name: match[1], arguments: JSON.parse(match[2]) }); } catch {}
+ }
+ return results;
+}
+
+// JSON format: {"tool": "<name>", "args": {...}} or {"tool": "<name>", "arguments": {...}}
+function extractJsonToolCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
+ const results: { name: string; arguments: Record<string, unknown> }[] = [];
+ const seen = new Set<string>();
+
+ function addResult(name: string, args: Record<string, unknown>) {
+  const key = `${name}:${JSON.stringify(args)}`;
+  if (!seen.has(key)) { seen.add(key); results.push({ name, arguments: args }); }
+ }
+
+ // Match <|tool|{json}|> format (pipe-delimited)
+ const pipeRe = /<\|tool\|(\{[^|]*\})\|>/g;
+ let pipeMatch: RegExpExecArray | null;
+ while ((pipeMatch = pipeRe.exec(text)) !== null) {
+  try {
+   const obj = JSON.parse(pipeMatch[1]);
+   if (obj.tool && typeof obj.tool === 'string') {
+    addResult(obj.tool, obj.args || obj.arguments || {});
+   }
+  } catch {}
+ }
+
+ // Match ```json\n{...}\n``` code blocks containing tool calls
+ const codeBlockRe = /```(?:json)?\s*\n(\{[\s\S]*?\})\n```/g;
+ let cbMatch: RegExpExecArray | null;
+ while ((cbMatch = codeBlockRe.exec(text)) !== null) {
+  try {
+   const obj = JSON.parse(cbMatch[1]);
+   if (obj.tool && typeof obj.tool === 'string') {
+    addResult(obj.tool, obj.args || obj.arguments || {});
+   }
+  } catch {}
+ }
+
+ // Match plain JSON lines: {"tool": "name", "args": {...}}
+ const lines = text.split('\n');
+ for (const line of lines) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{')) continue;
+  try {
+   const obj = JSON.parse(trimmed);
+   if (obj.tool && typeof obj.tool === 'string') {
+    addResult(obj.tool, obj.args || obj.arguments || {});
+   }
+  } catch {
+   const toolMatch = trimmed.match(/\{"tool"\s*:\s*"(\w+)"\s*,\s*(?:"args"|"arguments")\s*:\s*/);
+   if (toolMatch) {
+    const rest = trimmed.slice(toolMatch[0].length);
+    const argsJson = extractBalancedJson(rest);
+    if (argsJson !== null) {
+     try { addResult(toolMatch[1], JSON.parse(argsJson)); } catch {}
+    }
+   }
+  }
+ }
+ return results;
+}
+
+// Extract a balanced JSON object from the start of a string
+function extractBalancedJson(s: string): string | null {
+ if (s[0] !== '{') return null;
+ let depth = 0;
+ let inString = false;
+ let escape = false;
+ for (let i = 0; i < s.length; i++) {
+  const ch = s[i];
+  if (escape) { escape = false; continue; }
+  if (ch === '\\' && inString) { escape = true; continue; }
+  if (ch === '"') { inString = !inString; continue; }
+  if (inString) continue;
+  if (ch === '{') depth++;
+  if (ch === '}') { depth--; if (depth === 0) return s.slice(0, i + 1); }
+ }
+ return null;
+}
+
 // Bug 5 fix: balanced-brace pattern instead of greedy [\s\S]*
 function extractToolColonCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
  const results: { name: string; arguments: Record<string, unknown> }[] = [];
@@ -52,6 +139,14 @@ function stripToolCallSyntax(text: string): string {
  cleaned = cleaned.replace(/Action:\s*\S+\s*\n\s*Action Input:\s*\{[\s\S]*?\}/g, '');
  // Remove "Tool name(json)" at end
  cleaned = cleaned.replace(/Tool\s+\w+\s*\([\s\S]*?\)\s*$/, '');
+ // Remove <|tool_calls|>...</tool_calls> blocks
+ cleaned = cleaned.replace(/<\|tool_calls\|>[\s\S]*?<\/tool_calls>/g, '');
+ // Remove <|tool|{json}|> blocks
+ cleaned = cleaned.replace(/<\|tool\|[\s\S]*?\|>/g, '');
+ // Remove **Calling:** `name` + code block blocks
+ cleaned = cleaned.replace(/\*\*Calling:\*\*\s*`\w+`\s*\n```[\s\S]*?```/g, '');
+ // Remove standalone ```json code blocks with tool calls
+ cleaned = cleaned.replace(/```(?:json)?\s*\n\{[\s\S]*?\}\n```/g, '');
  // Clean up excessive blank lines left behind
  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
  return cleaned;
@@ -124,7 +219,7 @@ function extractPrompt(context: Context, memorySummary: string): string {
  : "";
  return `${t.name}: ${t.description}\n${params}`;
  }).join("\n\n");
- parts.push(`[Available Tools]\n${toolDesc}\n\nTo use a tool, output exactly one JSON object per turn:\n{"tool": "<tool_name>", "args": {"param": "value"}}\nDo NOT wrap in markdown fences. Output ONLY the JSON object.`);
+ parts.push(`[Available Tools]\n${toolDesc}\n\nTo use a tool, output exactly one JSON object per turn:\n{"tool": "<tool_name>", "args": {"param": "value"}}\nDo NOT wrap in markdown fences. Output ONLY the JSON object.\nIMPORTANT: Always use absolute paths (starting with /) for file operations.`);
  }
  for (const message of context.messages.slice(-6)) {
  if (message.role === "user") {
@@ -207,7 +302,7 @@ export function createDeepSeekNativeStream(state: HarnessState): StreamFn {
 
  function addUniqueCalls(calls: { name: string; arguments: Record<string, unknown> }[], prefix: string) {
  for (const call of calls) {
- const key = `${prefix}:${call.name}:${JSON.stringify(call.arguments)}`;
+ const key = `${call.name}:${JSON.stringify(call.arguments)}`;
  if (!seenKeys.has(key)) { seenKeys.add(key); allToolCalls.push(call); }
  }
  }
@@ -216,6 +311,8 @@ export function createDeepSeekNativeStream(state: HarnessState): StreamFn {
  addUniqueCalls(extractToolColonCalls(accumulatedText), "colon");
  addUniqueCalls(extractReactToolCalls(accumulatedText), "react");
  addUniqueCalls(extractToolParenCalls(accumulatedText), "paren");
+ addUniqueCalls(extractMarkdownToolCalls(accumulatedText), "markdown");
+ addUniqueCalls(extractJsonToolCalls(accumulatedText), "json");
  xmlParser.destroy();
 
  // ── Phase 3: Emit clean text (stripped of tool syntax), then tool calls ──
@@ -227,9 +324,9 @@ export function createDeepSeekNativeStream(state: HarnessState): StreamFn {
  assistant.content.push(textBlock);
  const textIdx = contentIndex;
  contentIndex++;
- stream.push({ type: "text_start", contentIndex: textIdx, partial: assistant } as any);
- stream.push({ type: "text_delta", contentIndex: textIdx, delta: cleanText, partial: assistant } as any);
- stream.push({ type: "text_end", contentIndex: textIdx, content: cleanText, partial: assistant } as any);
+ stream.push({ type: "text_start", contentIndex: textIdx, partial: { ...assistant, content: [...assistant.content] } } as any);
+ stream.push({ type: "text_delta", contentIndex: textIdx, delta: cleanText, partial: { ...assistant, content: [...assistant.content] } } as any);
+ stream.push({ type: "text_end", contentIndex: textIdx, content: cleanText, partial: { ...assistant, content: [...assistant.content] } } as any);
  }
 
  // Emit all tool calls as proper pi tool widgets
@@ -244,12 +341,12 @@ export function createDeepSeekNativeStream(state: HarnessState): StreamFn {
  name: validated.name,
  arguments: validated.arguments,
  };
- assistant.content.push(toolCall);
- const tcIndex = contentIndex;
- contentIndex++;
- stream.push({ type: "toolcall_start", contentIndex: tcIndex, partial: assistant } as any);
- stream.push({ type: "toolcall_delta", contentIndex: tcIndex, delta: JSON.stringify(validated.arguments), partial: assistant } as any);
- stream.push({ type: "toolcall_end", contentIndex: tcIndex, toolCall, partial: assistant } as any);
+  assistant.content.push(toolCall);
+  const tcIndex = contentIndex;
+  contentIndex++;
+  stream.push({ type: "toolcall_start", contentIndex: tcIndex, partial: { ...assistant, content: [...assistant.content] } } as any);
+  stream.push({ type: "toolcall_delta", contentIndex: tcIndex, delta: JSON.stringify(validated.arguments), partial: { ...assistant, content: [...assistant.content] } } as any);
+  stream.push({ type: "toolcall_end", contentIndex: tcIndex, toolCall, partial: { ...assistant, content: [...assistant.content] } } as any);
  emittedToolCalls++;
  }
 

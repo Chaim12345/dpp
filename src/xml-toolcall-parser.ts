@@ -19,10 +19,10 @@ type Frame =
   | { type: 'param'; name: string }
   | { type: 'pending_attr_tool'; name: string; attrs: Record<string, string> };
 
-const DSML_WRAPPERS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '｜｜DSML｜｜tool_calls', '｜｜DSML｜｜function_calls', '｜｜DSML｜｜pi-tool-calls', '_calls']);
+const DSML_WRAPPERS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '｜｜DSML｜｜tool_calls', '｜｜DSML｜｜function_calls', '｜｜DSML｜｜pi-tool-calls', '_calls', '|tool_calls|', '|function_calls|']);
 
 // Tags that are clearly wrapper/container tags, not tool calls
-const CONTAINER_TAGS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '_calls', 'response', 'answer']);
+const CONTAINER_TAGS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '_calls', 'response', 'answer', '|tool_calls|', '|function_calls|']);
 
 function getAttr(tag: Tag, attrName: string): string | undefined {
   if (!tag.attributes) return undefined;
@@ -133,27 +133,27 @@ export class XmlToolCallParser {
             }
           }
         } else if (bareName === 'tool_call') {
-          while (this.stack.length > 0) {
-            const frame = this.stack.pop()!;
-            if (frame.type === 'tool_call') {
-              if (frame.name) {
-                let args: Record<string, unknown>;
-                // Prefer params collected from <param> children
-                if (Object.keys(frame.params).length > 0) {
-                  args = {};
-                  for (const [k, v] of Object.entries(frame.params)) {
-                    try { args[k] = JSON.parse(v); } catch { args[k] = v; }
+          // If top of stack is a tool_calls wrapper, just close it (no nested tool_call tags)
+          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'tool_calls') {
+            this.stack.pop();
+          } else {
+            while (this.stack.length > 0) {
+              const frame = this.stack.pop()!;
+              if (frame.type === 'tool_call') {
+                if (frame.name) {
+                  let args: Record<string, unknown>;
+                  if (Object.keys(frame.params).length > 0) {
+                    args = {};
+                    for (const [k, v] of Object.entries(frame.params)) {
+                      try { args[k] = JSON.parse(v); } catch { args[k] = v; }
+                    }
+                  } else {
+                    try { args = JSON.parse(frame.body.trim()); } catch { args = { raw: frame.body.trim() }; }
                   }
-                } else {
-                  try {
-                    args = JSON.parse(frame.body.trim());
-                  } catch {
-                    args = { raw: frame.body.trim() };
-                  }
+                  this.results.push({ name: frame.name, arguments: args });
                 }
-                this.results.push({ name: frame.name, arguments: args });
+                break;
               }
-              break;
             }
           }
         } else if (bareName === 'param') {
@@ -195,6 +195,32 @@ export class XmlToolCallParser {
 
   end(): void {
     if (this.parser) this.parser.end();
+    // Flush any unclosed tool_call frames (malformed XML)
+    this.flushStack();
+  }
+
+  private flushStack(): void {
+    // Process remaining stack in reverse order, extracting tool_call frames
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      const frame = this.stack[i];
+      if (frame.type === 'tool_call' && frame.name) {
+        let args: Record<string, unknown>;
+        if (Object.keys(frame.params).length > 0) {
+          args = {};
+          for (const [k, v] of Object.entries(frame.params)) {
+            try { args[k] = JSON.parse(v); } catch { args[k] = v; }
+          }
+        } else {
+          try {
+            args = JSON.parse(frame.body.trim());
+          } catch {
+            args = { raw: frame.body.trim() };
+          }
+        }
+        this.results.push({ name: frame.name, arguments: args });
+      }
+    }
+    this.stack = [];
   }
 
   getToolCalls(): ToolCall[] {

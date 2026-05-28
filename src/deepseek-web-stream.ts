@@ -38,6 +38,52 @@ function extractReactToolCalls(text: string): ReactToolCall[] {
   return results;
 }
 
+// JSON tool call detection: {"tool": "<name>", "args": {<json>}}
+// DeepSeek web API outputs raw JSON when instructed with the system prompt
+function extractJsonToolCalls(text: string): ReactToolCall[] {
+  const results: ReactToolCall[] = [];
+  // Match standalone JSON tool call objects on their own line
+  const re = /\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[^}]*\})\s*\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    try {
+      const args = JSON.parse(match[2]);
+      if (args && typeof args === 'object') {
+        results.push({ name: match[1], arguments: args });
+      }
+    } catch { /* skip invalid JSON */ }
+  }
+  return results;
+}
+
+// Tool calls array format detection: {"tool_calls": [{"name": "<name>", "arguments": {<json>}}]}
+// This is the format that pi-coding-agent's system prompt instructs models to use
+function extractToolCallsArray(text: string): ReactToolCall[] {
+  const results: ReactToolCall[] = [];
+  
+  // Only try to parse if we have what looks like a complete tool_calls object
+  const completeMatch = text.match(/\{\s*"tool_calls"\s*:\s*\[[\s\S]*?\]\s*\}/);
+  if (!completeMatch) {
+    return results; // No complete tool_calls object found
+  }
+  
+  try {
+    // Try to parse the complete JSON object
+    const parsed = JSON.parse(completeMatch[0]);
+    if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
+      for (const call of parsed.tool_calls) {
+        if (call.name && call.arguments && typeof call.arguments === 'object') {
+          results.push({ name: call.name, arguments: call.arguments });
+        }
+      }
+    }
+  } catch (e) {
+    // JSON parsing failed, ignore
+  }
+  
+  return results;
+}
+
 export type DeepSeekWebApi = "deepseek-web";
 
 function baseAssistant(model: Model<Api>): AssistantMessage {
@@ -76,43 +122,105 @@ async function ensureSessionId(state: HarnessState, modelType: string): Promise<
 
 function extractPrompt(context: Context): string {
   const parts: string[] = [];
-  if (context.systemPrompt) parts.push(`[System]\n${context.systemPrompt}`);
+  
+  const isUsingPiCodingAgent = context.systemPrompt && context.systemPrompt.includes('expert coding assistant operating inside pi');
+  console.error(`[DEBUG] Detected pi-coding-agent context: ${isUsingPiCodingAgent}, tools count: ${(context as any).tools?.length || 0}`);
+  
+  if (isUsingPiCodingAgent) {
+    // For pi-coding-agent: use our proven-working system prompt format for DeepSeek
+    console.error(`[DEBUG] Replacing pi-coding-agent system prompt with DeepSeek-compatible format`);
+    
+    const toolDesc = (context as any).tools ? (context as any).tools.map((t: any) => {
+      const params = t.parameters?.properties ? Object.entries(t.parameters.properties)
+        .map(([k, v]: [string, any]) => {
+          const req = (t.parameters?.required || []).includes(k) ? "(required)" : "(optional)";
+          return ` - ${k} [${v.type || "any"}] ${req}: ${v.description || ""}`;
+        })
+        .join('\n') : '';
+      return `${t.name}: ${t.description}\n${params}`;
+    }).join('\n\n') : '';
 
- // Inject tool definitions so the model knows what tools are available
- // (DeepSeek web API has no native function calling support)
- if ((context as any).tools && (context as any).tools.length > 0) {
- const toolDesc = (context as any).tools.map((t: any) => {
- const params = t.parameters?.properties ? Object.entries(t.parameters.properties)
- .map(([k, v]: [string, any]) => {
- const req = (t.parameters?.required || []).includes(k) ? "(required)" : "(optional)";
- return ` - ${k} [${v.type || "any"}] ${req}: ${v.description || ""}`;
- })
- .join('\n') : '';
- return `${t.name}: ${t.description}\n${params}`;
- }).join('\n\n');
- parts.push(`[Available Tools]\n${toolDesc}\n\nTo use a tool, output exactly one JSON object per turn:\n{"tool": "<tool_name>", "args": {"param": "value"}}\nDo NOT wrap in markdown fences. Output ONLY the JSON object.`);
- }
+    const deepseekSystemPrompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+
+**Current directory:** ${process.cwd()}
+
+**Tools:**
+${toolDesc}
+
+---
+
+**Operating contract:**
+1. Continue working until the user's task is actually complete, or until you are blocked by missing credentials, permission, or repeated failing evidence.
+2. Use tools for repository facts. Do not guess file contents, command output, test results, or project structure.
+3. After each tool result, decide the next concrete action: inspect more, edit, test, or provide the final answer.
+4. If tool output shows an error, diagnose it and continue with a corrected action when possible.
+5. Do not stop after planning or after the first tool result unless the task is complete.
+6. Do not claim success until you have run an appropriate verification command or clearly explain why verification is impossible.
+
+**Tool-call protocol:**
+- To use tools, output exactly one JSON object and no markdown fence.
+- Do not simulate tool results. The host executes the tool and returns the result.
+- Do not use XML tags such as <_calls>, <tool_calls>, or [Tool:name] format.
+- You may request multiple independent tool calls in the same JSON object, but prefer sequential calls when later actions depend on earlier results.
+
+**Tool-call JSON examples:**
+{"tool_calls":[{"name":"bash","arguments":{"command":"ls -la"}}]}
+{"tool_calls":[{"name":"read","arguments":{"path":"package.json"}}]}
+{"tool_calls":[{"name":"write","arguments":{"path":"test.txt","content":"hello"}}]}
+{"tool_calls":[{"name":"edit","arguments":{"path":"file.txt","old_string":"old","new_string":"new"}}]}
+
+**Final response:**
+When the task is complete, answer with a concise summary of what changed, what was verified, and any remaining limitation.`;
+
+    parts.push(deepseekSystemPrompt);
+  } else {
+    // For agent-test.ts: use original system prompt
+    if (context.systemPrompt) {
+      console.error(`[DEBUG] Using original system prompt (length: ${context.systemPrompt.length})`);
+      parts.push(context.systemPrompt);
+    }
+    
+    // Add fallback tool instructions if needed
+    if ((context as any).tools && (context as any).tools.length > 0) {
+      const toolDesc = (context as any).tools.map((t: any) => {
+        const params = t.parameters?.properties ? Object.entries(t.parameters.properties)
+          .map(([k, v]: [string, any]) => {
+            const req = (t.parameters?.required || []).includes(k) ? "(required)" : "(optional)";
+            return ` - ${k} [${v.type || "any"}] ${req}: ${v.description || ""}`;
+          })
+          .join('\n') : '';
+        return `${t.name}: ${t.description}\n${params}`;
+      }).join('\n\n');
+      const toolInstructions = `\n[Available Tools]\n${toolDesc}\n\nTo use a tool, output exactly one JSON object per turn:\n{"tool_calls": [{"name": "<tool_name>", "arguments": {"param": "value"}}]}\nDo NOT wrap in markdown fences. Output ONLY the JSON object.`;
+      console.error(`[DEBUG] Adding fallback tool instructions for non-pi-coding-agent context`);
+      parts.push(toolInstructions);
+    }
+  }
+
   for (const message of context.messages.slice(-20)) {
     if (message.role === "user") {
       const text = typeof message.content === "string"
         ? message.content
         : message.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n");
-      parts.push(`[User]\n${text}`);
+      parts.push(`\n[User]\n${text}`);
     } else if (message.role === "assistant") {
       const textParts = message.content
         .filter((c): c is { type: "text"; text: string } => c.type === "text")
         .map((c) => c.text);
-      if (textParts.length) parts.push(`[Assistant]\n${textParts.join("\n")}`);
- } else if ((message as any).role === "tool") {
- const m = message as any;
- const text = typeof m.content === "string" ? m.content : (m.content || "");
- parts.push(`[Tool:${m.name || "unknown"}]\n${text}`);
+      if (textParts.length) parts.push(`\n[Assistant]\n${textParts.join("\n")}`);
+    } else if ((message as any).role === "tool") {
+      const m = message as any;
+      const text = typeof m.content === "string" ? m.content : (m.content || "");
+      parts.push(`\n[Tool:${m.name || "unknown"}]\n${text}`);
     } else if (message.role === "toolResult") {
       const text = message.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n");
-      parts.push(`[Tool:${message.toolName}]\n${text}`);
+      parts.push(`\n[Tool:${message.toolName}]\n${text}`);
     }
   }
-  return parts.join("\n\n");
+  
+  const finalPrompt = parts.join("");
+  console.error(`[DEBUG] Final prompt length: ${finalPrompt.length}`);
+  return finalPrompt;
 }
 
 function streamDeepSeekWeb(
@@ -167,6 +275,9 @@ function streamDeepSeekWeb(
         let emittedToolCalls = 0;
         const emittedReactCalls = new Set<string>();
 
+        // Track what we've already processed to avoid duplicate parsing
+        let lastProcessedLength = 0;
+
         function closeTextBlock() {
           if (textStarted && textBlock) {
             stream.push({ type: "text_end", contentIndex: contentIndex - 1, content: textBlock.text, partial: assistant });
@@ -200,9 +311,8 @@ function streamDeepSeekWeb(
           emittedToolCalls++;
         }
 
-        // Accumulate text for ReAct-style detection
+        // Accumulate text for tool call detection
         let accumulatedText = "";
-        let lastReactCheckPos = 0;
 
         for await (const event of parseSseStream(resp.body)) {
           await new Promise(r => setImmediate(r));
@@ -221,30 +331,73 @@ function streamDeepSeekWeb(
               }
             }
 
-            // Also check for ReAct-style tool calls in accumulated text
-            // Only check from last position to avoid re-emitting
-            const reactCalls = extractReactToolCalls(accumulatedText);
-            if (reactCalls.length > 0) {
-              console.error(`[DEBUG] ReAct parser detected ${reactCalls.length} tool call(s):`, reactCalls.map(c => c.name));
+            // Only check for tool calls if we have new content since last check
+            if (accumulatedText.length > lastProcessedLength + 10) { // Batch processing
+              lastProcessedLength = accumulatedText.length;
+
+              // Check for tool_calls array format ({"tool_calls": [...]})
+              const toolCallsArrayCalls = extractToolCallsArray(accumulatedText);
+              if (toolCallsArrayCalls.length > 0) {
+                console.error(`[DEBUG] ToolCalls array parser detected ${toolCallsArrayCalls.length} tool call(s):`, toolCallsArrayCalls.map(c => c.name));
+              }
+              for (const call of toolCallsArrayCalls) {
+                const callKey = `${call.name}:${JSON.stringify(call.arguments)}`;
+                if (!emittedReactCalls.has(callKey)) {
+                  emittedReactCalls.add(callKey);
+                  emitToolCall(call);
+                }
+              }
+
+              // Also check for ReAct-style tool calls in accumulated text
+              const reactCalls = extractReactToolCalls(accumulatedText);
+              if (reactCalls.length > 0) {
+                console.error(`[DEBUG] ReAct parser detected ${reactCalls.length} tool call(s):`, reactCalls.map(c => c.name));
+              }
+              for (const call of reactCalls) {
+                const callKey = `${call.name}:${JSON.stringify(call.arguments)}`;
+                if (!emittedReactCalls.has(callKey)) {
+                  emittedReactCalls.add(callKey);
+                  emitToolCall(call);
+                }
+              }
+
+              // Check for JSON tool calls ({"tool": "...", "args": {...}})
+              const jsonCalls = extractJsonToolCalls(accumulatedText);
+              if (jsonCalls.length > 0) {
+                console.error(`[DEBUG] JSON parser detected ${jsonCalls.length} tool call(s):`, jsonCalls.map(c => c.name));
+              }
+              for (const call of jsonCalls) {
+                const callKey = `${call.name}:${JSON.stringify(call.arguments)}`;
+                if (!emittedReactCalls.has(callKey)) {
+                  emittedReactCalls.add(callKey);
+                  emitToolCall(call);
+                }
+              }
             }
-            for (const call of reactCalls) {
-              // Deduplicate: only emit if we haven't seen this exact call
+
+            // Only start text block if no tool calls were emitted
+            if (emittedToolCalls === 0) {
+              if (!textStarted) {
+                startTextBlock();
+              }
+              textBlock!.text += event.delta;
+              stream.push({ type: "text_delta", contentIndex: contentIndex - 1, delta: event.delta, partial: assistant });
+            }
+          } else if (event.type === "thinking") {
+            // DeepSeek web API sends thinking fragments — skip for now
+          } else if (event.type === "done") {
+            state.parentMessageId = event.responseMessageId;
+            
+            // Final check for any remaining tool calls
+            const finalToolCalls = extractToolCallsArray(accumulatedText);
+            for (const call of finalToolCalls) {
               const callKey = `${call.name}:${JSON.stringify(call.arguments)}`;
               if (!emittedReactCalls.has(callKey)) {
                 emittedReactCalls.add(callKey);
                 emitToolCall(call);
               }
             }
-
-            if (!textStarted) {
-              startTextBlock();
-            }
-            textBlock!.text += event.delta;
-            stream.push({ type: "text_delta", contentIndex: contentIndex - 1, delta: event.delta, partial: assistant });
-          } else if (event.type === "thinking") {
-            // DeepSeek web API sends thinking fragments — skip for now
-          } else if (event.type === "done") {
-            state.parentMessageId = event.responseMessageId;
+            
             // Flush any remaining XML tool calls
             if (!xmlFailed && xmlParser.isReady) {
               xmlParser.end();
@@ -301,18 +454,18 @@ function streamDeepSeekWeb(
           message: {
             ...assistant,
             stopReason: emittedToolCalls > 0 ? "toolUse" : "stop",
-            responseId: state.parentMessageId != null ? String(state.parentMessageId) : undefined,
           },
         });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        const errMessage: AssistantMessage = {
-          ...assistant,
-          stopReason: "error",
-          errorMessage: msg,
-        };
-        stream.push({ type: "error", reason: "error", error: errMessage });
-        stream.end(errMessage);
+        if (error instanceof WafTokenExpiredError || error instanceof StaleAuthError) {
+          state.authToken = undefined;
+          state.chatSessionId = undefined;
+          stream.push({ type: "error", reason: "error", error: { ...assistant, stopReason: "error", errorMessage: error.message } });
+        } else {
+          console.error("DeepSeek stream error:", error);
+          stream.push({ type: "error", reason: "error", error: { ...assistant, stopReason: "error", errorMessage: String(error) } });
+        }
+        stream.end();
       }
     })();
 
@@ -326,13 +479,15 @@ export function registerDeepSeekWebApi(state: HarnessState): void {
   if (registered) return;
   registered = true;
 
-  const streamFn = streamDeepSeekWeb(state);
-
-  registerApiProvider({
-    api: "deepseek-web" as Api,
-    stream: streamFn as any,
-    streamSimple: streamFn as any,
-  }, "deepseek-web-harness");
+  registerApiProvider<DeepSeekWebApi>({
+    api: "deepseek-web",
+    provider: "deepseek-web",
+    models: {
+      "deepseek-web/expert": { name: "DeepSeek Expert (Web)" },
+      "deepseek-web/grok": { name: "DeepSeek Grok (Web)" },
+    },
+    stream: streamDeepSeekWeb(state),
+  });
 }
 
 export function createDeepSeekWebStreamFn(state: HarnessState) {

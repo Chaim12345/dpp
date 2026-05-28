@@ -5,3 +5,4 @@ tui-debug.log
 err.txt
 *.tar.gz
 .env
+go-harness/pi-harness
