@@ -8,9 +8,11 @@
 
 import {
   AuthStorage,
+  type CreateAgentSessionRuntimeFactory,
   createAgentSessionServices,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
+  getAgentDir,
   InteractiveMode,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -27,6 +29,7 @@ const harnessState: HarnessState = {
   memorySummary: "",
   authToken: null,
   cookieHeader: null,
+  deepseekApiKey: null,
 };
 
 // Define a DeepSeek model that uses our custom web API
@@ -45,7 +48,7 @@ const deepSeekWebModel: Model<Api> = {
 
 async function main(): Promise<void> {
   const cwd = process.cwd();
-  const agentDir = process.env.HOME + "/.pi/agent";
+  const agentDir = getAgentDir();
 
   // 1. Create auth storage (reads from ~/.pi/agent/auth.json or env)
   const authStorage = AuthStorage.create(agentDir);
@@ -54,7 +57,7 @@ async function main(): Promise<void> {
   const sessionManager = SessionManager.create(cwd);
 
   // 3. Define the runtime factory that registers our provider and creates sessions
-  const createRuntime = async ({ cwd, agentDir, sessionManager }: { cwd: string; agentDir: string; sessionManager: SessionManager }) => {
+  const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     // 1a. Register our custom API provider with the stream function
     registerDeepSeekWebApi(harnessState);
 
@@ -77,16 +80,17 @@ async function main(): Promise<void> {
     });
 
     // 1d. Create the agent session with our custom model
-    const { session } = await createAgentSessionFromServices({
+    const sessionResult = await createAgentSessionFromServices({
       services,
       sessionManager,
+      sessionStartEvent,
       model: deepSeekWebModel,
     });
 
     return {
-      session,
+      ...sessionResult,
       services,
-      diagnostics: [],
+      diagnostics: services.diagnostics,
     };
   };
 

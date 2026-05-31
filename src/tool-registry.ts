@@ -76,7 +76,7 @@ function agentToolToToolDef(tool: AgentTool<any>): ToolDef {
           .join("\n") || "";
         return {
           content: text,
-          isError: result.isError || false,
+          isError: (result as any).isError || false,
         };
       } catch (err) {
         return {
@@ -179,6 +179,51 @@ function extractJsonBlock(text: string, startIdx: number): string | null {
   return null;
 }
 
+function extractJsonValue(text: string, startIdx: number): string | null {
+  const opener = text[startIdx];
+  const closer = opener === "{" ? "}" : opener === "[" ? "]" : null;
+  if (!closer) return null;
+
+  let depth = 0;
+  let inStr = false;
+  for (let i = startIdx; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === opener) depth++;
+    else if (c === closer) {
+      depth--;
+      if (depth === 0) return text.substring(startIdx, i + 1);
+    }
+  }
+  return null;
+}
+
+function parseToolCallJsonValue(value: unknown, toolNames: Set<string>): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const arr = Array.isArray(value)
+    ? value
+    : Array.isArray((value as any)?.tool_calls)
+      ? (value as any).tool_calls
+      : Array.isArray((value as any)?._calls)
+        ? (value as any)._calls
+        : value && typeof value === "object"
+          ? [value]
+          : [];
+
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const name = String((item as any).name || ((item as any).function?.name ?? ""));
+    if (!toolNames.has(name)) continue;
+    calls.push({ name, arguments: normalizeToolArgs(item) });
+  }
+  return calls;
+}
+
 function normalizeToolArgs(c: any): Record<string, unknown> {
   if (c.arguments != null) {
     return typeof c.arguments === "string" ? JSON.parse(c.arguments) : c.arguments as Record<string, unknown>;
@@ -220,7 +265,7 @@ function coerceDsmlParam(value: string, attrs: string): unknown {
 function extractDeepSeekDsmlToolCalls(text: string): ToolCall[] | null {
   const toolNames = new Set(toolDefs.map((t) => t.name));
   const calls: ToolCall[] = [];
-  const invokeRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke>/g;
+  const invokeRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke>/gu;
   let invokeMatch: RegExpExecArray | null;
 
   while ((invokeMatch = invokeRegex.exec(text)) !== null) {
@@ -229,7 +274,7 @@ function extractDeepSeekDsmlToolCalls(text: string): ToolCall[] | null {
 
     const args: Record<string, unknown> = {};
     const body = invokeMatch[2];
-    const paramRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter\s+name=["']([^"']+)["']([^>]*)>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter>/g;
+    const paramRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter\s+name=["']([^"']+)["']([^>]*)>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter>/gu;
     let paramMatch: RegExpExecArray | null;
 
     while ((paramMatch = paramRegex.exec(body)) !== null) {
@@ -344,11 +389,11 @@ function extractXmlToolCalls(text: string): ToolCall[] | null {
     const inner = text.slice(si + ws.length, ei);
     const calls: ToolCall[] = [];
 
-    const invokeRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke>/g;
+    const invokeRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?invoke>/gu;
     let m: RegExpExecArray | null;
     while ((m = invokeRegex.exec(inner)) !== null) {
       const params: Record<string, unknown> = {};
-      const paramRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter\s+name=["']([^"']+)["']([^>]*)>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter>/g;
+      const paramRegex = /<(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter\s+name=["']([^"']+)["']([^>]*)>([\s\S]*?)<\/(?:｜｜DSML｜｜|\u{1d9e}\u{1d9a})?parameter>/gu;
       let pm: RegExpExecArray | null;
       while ((pm = paramRegex.exec(m[2])) !== null) params[pm[1]] = pm[2].trim();
       if (m[1] && toolNames.has(m[1])) calls.push({ name: m[1], arguments: params });
@@ -357,19 +402,21 @@ function extractXmlToolCalls(text: string): ToolCall[] | null {
     if (calls.length === 0) {
       const trimmed = inner.trim();
       if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+        const jsonValue = extractJsonValue(trimmed, 0);
+        if (jsonValue) {
+          try {
+            calls.push(...parseToolCallJsonValue(JSON.parse(jsonValue), toolNames));
+          } catch { /* ignore */ }
+        }
+      }
+    }
+
+    if (calls.length === 0) {
+      const trimmed = inner.trim();
+      if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
         try {
           const parsed = JSON.parse(trimmed);
-          const arr = Array.isArray(parsed) ? parsed : [parsed];
-          for (const item of arr) {
-            if (item.name && toolNames.has(item.name)) {
-              const args = item.arguments
-                ? (typeof item.arguments === "string" ? JSON.parse(item.arguments) : item.arguments)
-                : (item.function?.arguments
-                  ? (typeof item.function.arguments === "string" ? JSON.parse(item.function.arguments) : item.function.arguments)
-                  : {});
-              calls.push({ name: item.name, arguments: args });
-            }
-          }
+          calls.push(...parseToolCallJsonValue(parsed, toolNames));
         } catch { /* ignore */ }
       }
     }

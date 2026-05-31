@@ -52,8 +52,18 @@ func main() {
 	cwd, _ := os.Getwd()
 	prompt := fmt.Sprintf(systemPrompt, cwd)
 
-	fmt.Println("DeepSeek Web API Harness (Go)")
-	fmt.Println("Type 'quit' to exit.")
+	serverMode := false
+	serverPort := "8080"
+	for _, arg := range os.Args[1:] {
+		switch arg {
+		case "--server", "server":
+			serverMode = true
+		default:
+			if strings.HasPrefix(arg, "--port=") {
+				serverPort = strings.TrimPrefix(arg, "--port=")
+			}
+		}
+	}
 
 	auth := LoadAuth()
 	if auth == "" {
@@ -64,12 +74,30 @@ func main() {
 
 	client := NewWebClient(auth)
 
+	if serverMode {
+		apiKey := os.Getenv("DEEPSEEK_PROXY_API_KEY")
+		if apiKey != "" {
+			fmt.Println("API key authentication enabled")
+		} else {
+			fmt.Println("No API key set (DEEPSEEK_PROXY_API_KEY), proxy will accept all requests")
+		}
+		fmt.Println("Starting OpenAI-compatible proxy server...")
+		if err := StartOpenAIServer(client, nil, serverPort, apiKey); err != nil {
+			fmt.Printf("Server error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	sessionID, err := client.CreateChatSession()
 	if err != nil {
 		fmt.Printf("Failed to create session: %v\n", err)
 		fmt.Println("Check your auth token or network connection.")
 		os.Exit(1)
 	}
+
+	fmt.Println("DeepSeek Web API Harness (Go)")
+	fmt.Println("Type 'quit' to exit.")
 	fmt.Printf("Session created: %s\n\n", sessionID)
 
 	var parentMsgID string
@@ -132,7 +160,7 @@ func main() {
 
 		err := client.ChatCompletionStream(
 			CompletionOpts{
-				SessionID:  sessionID,
+				SessionID:   sessionID,
 				ParentMsgID: &parentMsgID,
 				Prompt:      fullPrompt,
 			},
@@ -173,7 +201,7 @@ type ConversationTurn struct {
 }
 
 // executeToolLoop runs tool calls and feeds results back.
-func executeToolLoop(ctx context.Context, client *WebClient, sessionID, parentMsgID *string, initialCalls []ToolCall, history *[]ConversationTurn, systemPrompt, originalRequest string) {
+func executeToolLoop(ctx context.Context, client *WebClient, sessionID, parentMsgID *string, initialCalls []ToolCall, history *[]ConversationTurn, systemPrompt, basePrompt string) {
 	callStack := initialCalls
 	maxIterations := 5
 	iteration := 0
@@ -226,7 +254,7 @@ func executeToolLoop(ctx context.Context, client *WebClient, sessionID, parentMs
 
 		err := client.ChatCompletionStream(
 			CompletionOpts{
-				SessionID:  *sessionID,
+				SessionID:   *sessionID,
 				ParentMsgID: parentMsgID,
 				Prompt:      fullPrompt,
 			},

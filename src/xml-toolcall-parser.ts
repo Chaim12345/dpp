@@ -11,44 +11,16 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
-type Frame =
-  | { type: 'tool_calls' }
-  | { type: 'invoke'; name: string; params: Record<string, string> }
-  | { type: 'parameter'; name: string }
-  | { type: 'tool_call'; name: string; body: string; params: Record<string, string> }
-  | { type: 'param'; name: string }
-  | { type: 'pending_attr_tool'; name: string; attrs: Record<string, string> };
-
-const DSML_WRAPPERS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '｜｜DSML｜｜tool_calls', '｜｜DSML｜｜function_calls', '｜｜DSML｜｜pi-tool-calls', '_calls', '|tool_calls|', '|function_calls|']);
-
-// Tags that are clearly wrapper/container tags, not tool calls
-const CONTAINER_TAGS = new Set(['tool_calls', 'function_calls', 'pi-tool-calls', '_calls', 'response', 'answer', '|tool_calls|', '|function_calls|']);
-
-function getAttr(tag: Tag, attrName: string): string | undefined {
-  if (!tag.attributes) return undefined;
-  for (const attr of tag.attributes) {
-    if (attr.name?.value === attrName) return attr.value?.value;
-  }
-  return undefined;
-}
-
-function getAllAttrs(tag: Tag): Record<string, string> {
-  const attrs: Record<string, string> = {};
-  if (!tag.attributes) return attrs;
-  for (const attr of tag.attributes) {
-    if (attr.name?.value) {
-      attrs[attr.name.value] = attr.value?.value || '';
-    }
-  }
-  return attrs;
-}
-
 export class XmlToolCallParser {
   private parser: SAXParser | null = null;
-  private stack: Frame[] = [];
   private results: ToolCall[] = [];
   private ready = false;
   private initPromise: Promise<void> | null = null;
+
+  // Current state
+  private inToolCalls = false;
+  private currentInvoke: { name: string; params: Record<string, string> } | null = null;
+  private currentParam: { name: string; value: string } | null = null;
 
   async init(): Promise<void> {
     if (this.ready) return;
@@ -70,157 +42,91 @@ export class XmlToolCallParser {
   private onEvent(event: SaxEventType, detail: Tag): void {
     switch (event) {
       case SaxEventType.OpenTag: {
-        const name = detail.name;
-        const bareName = name.replace(/^｜｜DSML｜｜/, '');
-        if (DSML_WRAPPERS.has(name)) {
-          this.stack.push({ type: 'tool_calls' });
-        } else if (bareName === 'invoke') {
-          const invokeName = getAttr(detail, 'name') || '';
-          this.stack.push({ type: 'invoke', name: invokeName, params: {} });
-        } else if (bareName === 'parameter') {
-          const paramName = getAttr(detail, 'name') || '';
-          this.stack.push({ type: 'parameter', name: paramName });
-        } else if (bareName === 'tool_call') {
-          const tcName = getAttr(detail, 'name') || '';
-          this.stack.push({ type: 'tool_call', name: tcName, body: '', params: {} });
-        } else if (bareName === 'param') {
-          const paramName = getAttr(detail, 'name') || '';
-          this.stack.push({ type: 'param', name: paramName });
-        } else if (!CONTAINER_TAGS.has(bareName) && bareName.includes('_')) {
-          // Likely a tool call in <tool_name attr="value"> format
-          // Store as pending until we see if it's self-closing
-          const attrs = getAllAttrs(detail);
-          this.stack.push({ type: 'pending_attr_tool', name: bareName, attrs });
+        const name = detail.name.replace(/^｜｜DSML｜｜/, '');
+        
+        if (name === 'tool_calls' || name === 'function_calls' || name === 'pi-tool-calls') {
+          this.inToolCalls = true;
+        } else if (name === 'invoke' && this.inToolCalls) {
+          const invokeName = this.getAttr(detail, 'name') || '';
+          this.currentInvoke = { name: invokeName, params: {} };
+        } else if ((name === 'parameter' || name === 'param') && this.currentInvoke) {
+          const paramName = this.getAttr(detail, 'name') || '';
+          this.currentParam = { name: paramName, value: '' };
         }
         break;
       }
+
       case SaxEventType.Text: {
-        const value = detail.value;
-        if (this.stack.length >= 2) {
-          const top = this.stack[this.stack.length - 1];
-          const parent = this.stack[this.stack.length - 2];
-          if (top.type === 'parameter' && parent.type === 'invoke') {
-            parent.params[top.name] = (parent.params[top.name] || '') + value;
-          }
-          if (top.type === 'parameter' && parent.type === 'tool_call') {
-            parent.params[top.name] = (parent.params[top.name] || '') + value;
-          }
-          if (top.type === 'param' && parent.type === 'tool_call') {
-            parent.params[top.name] = (parent.params[top.name] || '') + value;
-          }
-        }
-        const topFrame = this.stack[this.stack.length - 1];
-        if (topFrame && topFrame.type === 'tool_call') {
-          topFrame.body += value;
+        if (this.currentParam) {
+          this.currentParam.value += detail.value;
         }
         break;
       }
+
       case SaxEventType.CloseTag: {
-        const name = detail.name;
-        const bareName = name.replace(/^｜｜DSML｜｜/, '');
-        if (bareName === 'invoke') {
-          while (this.stack.length > 0) {
-            const frame = this.stack.pop()!;
-            if (frame.type === 'invoke') {
-              if (frame.name) {
-                const args: Record<string, unknown> = {};
-                for (const [k, v] of Object.entries(frame.params)) {
-                  try { args[k] = JSON.parse(v); } catch { args[k] = v; }
-                }
-                this.results.push({ name: frame.name, arguments: args });
-              }
-              break;
-            }
-          }
-        } else if (bareName === 'tool_call') {
-          // If top of stack is a tool_calls wrapper, just close it (no nested tool_call tags)
-          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'tool_calls') {
-            this.stack.pop();
-          } else {
-            while (this.stack.length > 0) {
-              const frame = this.stack.pop()!;
-              if (frame.type === 'tool_call') {
-                if (frame.name) {
-                  let args: Record<string, unknown>;
-                  if (Object.keys(frame.params).length > 0) {
-                    args = {};
-                    for (const [k, v] of Object.entries(frame.params)) {
-                      try { args[k] = JSON.parse(v); } catch { args[k] = v; }
-                    }
-                  } else {
-                    try { args = JSON.parse(frame.body.trim()); } catch { args = { raw: frame.body.trim() }; }
-                  }
-                  this.results.push({ name: frame.name, arguments: args });
-                }
-                break;
-              }
-            }
-          }
-        } else if (bareName === 'param') {
-          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'param') {
-            this.stack.pop();
-          }
-        } else if (bareName === 'parameter') {
-          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'parameter') {
-            this.stack.pop();
-          }
-          // Also handle parameter inside tool_call
-          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'tool_call') {
-            // parameter closed, already popped above or was inside tool_call
-          }
-        } else if (DSML_WRAPPERS.has(name)) {
-          if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'tool_calls') {
-            this.stack.pop();
-          }
-        } else if (this.stack.length > 0 && this.stack[this.stack.length - 1].type === 'pending_attr_tool') {
-          const frame = this.stack.pop()! as Extract<Frame, { type: 'pending_attr_tool' }>;
-          if (frame.name && Object.keys(frame.attrs).length > 0) {
+        const name = detail.name.replace(/^｜｜DSML｜｜/, '');
+        
+        if ((name === 'parameter' || name === 'param') && this.currentParam && this.currentInvoke) {
+          // Close parameter, add to invoke
+          this.currentInvoke.params[this.currentParam.name] = this.currentParam.value.trim();
+          this.currentParam = null;
+        } else if (name === 'invoke' && this.currentInvoke) {
+          // Close invoke, emit tool call
+          if (this.currentInvoke.name && Object.keys(this.currentInvoke.params).length > 0) {
             const args: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(frame.attrs)) {
-              try { args[k] = JSON.parse(v); } catch { args[k] = v; }
+            for (const [k, v] of Object.entries(this.currentInvoke.params)) {
+              try {
+                args[k] = JSON.parse(v);
+              } catch {
+                args[k] = v;
+              }
             }
-            this.results.push({ name: frame.name, arguments: args });
+            this.results.push({ name: this.currentInvoke.name, arguments: args });
           }
+          this.currentInvoke = null;
+        } else if (name === 'tool_calls' || name === 'function_calls' || name === 'pi-tool-calls') {
+          this.inToolCalls = false;
         }
         break;
       }
     }
+  }
+
+  private getAttr(tag: Tag, attrName: string): string | undefined {
+    if (!tag.attributes) return undefined;
+    for (const attr of tag.attributes) {
+      if (attr.name?.value === attrName) return attr.value?.value;
+    }
+    return undefined;
   }
 
   feed(chunk: string): void {
     if (!this.parser) return;
-    const bytes = new TextEncoder().encode(chunk);
-    this.parser.write(bytes);
+    try {
+      const bytes = new TextEncoder().encode(chunk);
+      this.parser.write(bytes);
+    } catch (e) {
+      // SAX parser error, reset state
+      this.reset();
+    }
   }
 
   end(): void {
-    if (this.parser) this.parser.end();
-    // Flush any unclosed tool_call frames (malformed XML)
-    this.flushStack();
-  }
-
-  private flushStack(): void {
-    // Process remaining stack in reverse order, extracting tool_call frames
-    for (let i = this.stack.length - 1; i >= 0; i--) {
-      const frame = this.stack[i];
-      if (frame.type === 'tool_call' && frame.name) {
-        let args: Record<string, unknown>;
-        if (Object.keys(frame.params).length > 0) {
-          args = {};
-          for (const [k, v] of Object.entries(frame.params)) {
-            try { args[k] = JSON.parse(v); } catch { args[k] = v; }
-          }
-        } else {
-          try {
-            args = JSON.parse(frame.body.trim());
-          } catch {
-            args = { raw: frame.body.trim() };
-          }
-        }
-        this.results.push({ name: frame.name, arguments: args });
-      }
+    if (this.parser) {
+      this.parser.end();
     }
-    this.stack = [];
+    // Flush any incomplete invoke
+    if (this.currentInvoke && this.currentInvoke.name && Object.keys(this.currentInvoke.params).length > 0) {
+      const args: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(this.currentInvoke.params)) {
+        try {
+          args[k] = JSON.parse(v);
+        } catch {
+          args[k] = v;
+        }
+      }
+      this.results.push({ name: this.currentInvoke.name, arguments: args });
+    }
   }
 
   getToolCalls(): ToolCall[] {
@@ -230,14 +136,15 @@ export class XmlToolCallParser {
   }
 
   reset(): void {
-    this.stack = [];
     this.results = [];
+    this.inToolCalls = false;
+    this.currentInvoke = null;
+    this.currentParam = null;
   }
 
   destroy(): void {
     this.parser = null;
-    this.stack = [];
-    this.results = [];
+    this.reset();
     this.ready = false;
     this.initPromise = null;
   }
@@ -245,19 +152,4 @@ export class XmlToolCallParser {
   get isReady(): boolean {
     return this.ready;
   }
-}
-
-export const batchParser: XmlToolCallParser = new XmlToolCallParser();
-let batchInitPromise: Promise<void> | null = null;
-let batchReady = false;
-
-export function isBatchReady(): boolean {
-  return batchReady;
-}
-
-export function ensureBatchParser(): Promise<void> {
-  if (batchReady) return Promise.resolve();
-  if (batchInitPromise) return batchInitPromise;
-  batchInitPromise = batchParser.init().then(() => { batchReady = true; });
-  return batchInitPromise;
 }
