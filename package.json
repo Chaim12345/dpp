@@ -11,7 +11,8 @@
     "agent-native": "bun run src/agent-native.ts",
     "web": "bun run src/web-server.ts",
     "tui": "bun run src/terminal-mode.ts",
-    "pi-interactive": "bun run src/pi-interactive.ts"
+    "pi-interactive": "bun run src/pi-interactive.ts",
+    "openai": "bun run src/openai-server.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.75.3",
