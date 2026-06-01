@@ -1,0 +1,211 @@
+diff --git a/cmd/claw-code-go/main.go b/cmd/claw-code-go/main.go
+index abca467..5f68696 100644
+--- a/cmd/claw-code-go/main.go
++++ b/cmd/claw-code-go/main.go
+@@ -37,6 +37,7 @@ func main() {
+ 	}
+ 
+ 	promptFlag := flag.String("prompt", "", "Run a single prompt and exit")
++	promptFileFlag := flag.String("prompt-file", "", "Read the prompt from a file (useful for prompts larger than the OS argv limit)")
+ 	modelFlag := flag.String("model", "", "Override the model to use")
+ 	replFlag := flag.Bool("repl", false, "Run in interactive REPL mode (default when no --prompt)")
+ 	sessionFlag := flag.String("session", "", "Session ID to load")
+@@ -142,7 +143,16 @@ func main() {
+ 	}
+ 
+ 	// Single prompt (non-interactive) mode — no TUI, plain stdout streaming.
+-	if *promptFlag != "" {
++	effectivePrompt := *promptFlag
++	if effectivePrompt == "" && *promptFileFlag != "" {
++		data, err := os.ReadFile(*promptFileFlag)
++		if err != nil {
++			fmt.Fprintf(os.Stderr, "Error: reading prompt file %s: %v\n", *promptFileFlag, err)
++			os.Exit(1)
++		}
++		effectivePrompt = string(data)
++	}
++	if effectivePrompt != "" {
+ 		if credErr != nil {
+ 			fmt.Fprintln(os.Stderr, "Error: cannot use --prompt without valid credentials.")
+ 			fmt.Fprintln(os.Stderr, "Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or run the TUI and use /login.")
+@@ -158,7 +168,7 @@ func main() {
+ 		}()
+ 
+ 		ctx := context.Background()
+-		if err := loop.SendMessage(ctx, *promptFlag); err != nil {
++		if err := loop.SendMessage(ctx, effectivePrompt); err != nil {
+ 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+ 			os.Exit(1)
+ 		}
+diff --git a/go.mod b/go.mod
+index 57f3e85..55d065a 100644
+--- a/go.mod
++++ b/go.mod
+@@ -2,13 +2,17 @@ module claw-code-go
+ 
+ go 1.24.2
+ 
++require (
++	github.com/charmbracelet/bubbles v1.0.0
++	github.com/charmbracelet/bubbletea v1.3.10
++	github.com/charmbracelet/lipgloss v1.1.0
++	github.com/tetratelabs/wazero v1.11.0
++)
++
+ require (
+ 	github.com/atotto/clipboard v0.1.4 // indirect
+ 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
+-	github.com/charmbracelet/bubbles v1.0.0 // indirect
+-	github.com/charmbracelet/bubbletea v1.3.10 // indirect
+ 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
+-	github.com/charmbracelet/lipgloss v1.1.0 // indirect
+ 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
+ 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
+ 	github.com/charmbracelet/x/term v0.2.2 // indirect
+diff --git a/go.sum b/go.sum
+index aa519ac..5a4a89e 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,7 +1,11 @@
++github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
++github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
+ github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
+ github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
+ github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
+ github.com/aymanbagabas/go-osc52/v2 v2.0.1/go.mod h1:uYgXzlJ7ZpABp8OJ+exZzJJhRNQ2ASbcXHWsFqH8hp8=
++github.com/aymanbagabas/go-udiff v0.3.1 h1:LV+qyBQ2pqe0u42ZsUEtPiCaUoqgA9gYRDs3vj1nolY=
++github.com/aymanbagabas/go-udiff v0.3.1/go.mod h1:G0fsKmG+P6ylD0r6N/KgQD/nWzgfnl8ZBcNLgcbrw8E=
+ github.com/charmbracelet/bubbles v1.0.0 h1:12J8/ak/uCZEMQ6KU7pcfwceyjLlWsDLAxB5fXonfvc=
+ github.com/charmbracelet/bubbles v1.0.0/go.mod h1:9d/Zd5GdnauMI5ivUIVisuEm3ave1XwXtD1ckyV6r3E=
+ github.com/charmbracelet/bubbletea v1.3.10 h1:otUDHWMMzQSB0Pkc87rm691KZ3SWa4KUlvF9nRvCICw=
+@@ -40,8 +44,12 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
+ github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
+ github.com/rivo/uniseg v0.4.7 h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=
+ github.com/rivo/uniseg v0.4.7/go.mod h1:FN3SvrM+Zdj16jyLfmOkMNblXMcoc8DfTHruCPUcx88=
++github.com/tetratelabs/wazero v1.11.0 h1:+gKemEuKCTevU4d7ZTzlsvgd1uaToIDtlQlmNbwqYhA=
++github.com/tetratelabs/wazero v1.11.0/go.mod h1:eV28rsN8Q+xwjogd7f4/Pp4xFxO7uOGbLcD/LzB1wiU=
+ github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
+ github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e/go.mod h1:RbqR21r5mrJuqunuUZ/Dhy/avygyECGrLceyNeo4LiM=
++golang.org/x/exp v0.0.0-20231006140011-7918f672742d h1:jtJma62tbqLibJ5sFQz8bKtEM8rJBtfilJ2qTU199MI=
++golang.org/x/exp v0.0.0-20231006140011-7918f672742d/go.mod h1:ldy0pHrwJyGW56pPQzzkH36rKxoZW1tw7ZJpeKx+hdo=
+ golang.org/x/sys v0.0.0-20210809222454-d867a43fc93e/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.38.0 h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
+diff --git a/internal/auth/credentials.go b/internal/auth/credentials.go
+index c23c002..46d0b9b 100644
+--- a/internal/auth/credentials.go
++++ b/internal/auth/credentials.go
+@@ -7,6 +7,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ )
+ 
+ // ProviderCredentials holds authentication credentials for a single AI provider.
+@@ -125,6 +126,18 @@ func ResolveCredentials() (provider, token, method string, err error) {
+ 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+ 		return "openai", key, "api_key", nil
+ 	}
++	if key := os.Getenv("DEEPSEEK_TOKEN"); key != "" {
++		return "deepseek", key, "api_key", nil
++	}
++	if os.Getenv("CLAW_CODE_USE_DEEPSEEK") == "1" {
++		// The token might live on disk (~/.deepseek/deepseek_token.txt).
++		// We'll let the deepseek provider find it on its own; report
++		// "deepseek" as the active provider with a sentinel token.
++		if tok := deepseekTokenFromDisk(); tok != "" {
++			return "deepseek", tok, "api_key", nil
++		}
++		return "deepseek", "", "api_key", fmt.Errorf("CLAW_CODE_USE_DEEPSEEK=1 but no token found in DEEPSEEK_TOKEN, ~/.deepseek/deepseek_token.txt, or ~/.deepseek/auth.json")
++	}
+ 
+ 	// Try the credentials store.
+ 	store, _ := LoadCredentialStore()
+@@ -174,3 +187,41 @@ func emptyCredentialStore() *CredentialStore {
+ 		Providers: map[string]*ProviderCredentials{},
+ 	}
+ }
++
++// deepseekTokenFromDisk reads a DeepSeek token from the same locations the
++// dpp Go harness uses: ~/.deepseek/deepseek_token.txt or the token field of
++// ~/.deepseek/auth.json. Returns "" if neither file exists or no token is
++// present.
++func deepseekTokenFromDisk() string {
++	home, err := os.UserHomeDir()
++	if err != nil {
++		return ""
++	}
++	tokenFile := filepath.Join(home, ".deepseek", "deepseek_token.txt")
++	if data, err := os.ReadFile(tokenFile); err == nil {
++		if t := strings.TrimSpace(string(data)); t != "" {
++			return t
++		}
++	}
++	authFile := filepath.Join(home, ".deepseek", "auth.json")
++	if data, err := os.ReadFile(authFile); err == nil {
++		var authObj struct {
++			Origins []struct {
++				LocalStorage []struct {
++					Key   string `json:"key"`
++					Value string `json:"value"`
++				} `json:"localStorage"`
++			} `json:"origins"`
++		}
++		if json.Unmarshal(data, &authObj) == nil {
++			for _, origin := range authObj.Origins {
++				for _, ls := range origin.LocalStorage {
++					if ls.Key == "token" || ls.Key == "ds_token" || ls.Key == "deepseek_token" {
++						return ls.Value
++					}
++				}
++			}
++		}
++	}
++	return ""
++}
+diff --git a/internal/runtime/config.go b/internal/runtime/config.go
+index 3baefab..dfdf7e5 100644
+--- a/internal/runtime/config.go
++++ b/internal/runtime/config.go
+@@ -169,6 +169,10 @@ func detectProvider() string {
+ 		return "vertex"
+ 	case os.Getenv("CLAUDE_CODE_USE_FOUNDRY") == "1":
+ 		return "foundry"
++	case os.Getenv("DEEPSEEK_TOKEN") != "":
++		return "deepseek"
++	case os.Getenv("CLAW_CODE_USE_DEEPSEEK") == "1":
++		return "deepseek"
+ 	default:
+ 		return "anthropic"
+ 	}
+diff --git a/internal/runtime/provider_factory.go b/internal/runtime/provider_factory.go
+index ff942f6..324f169 100644
+--- a/internal/runtime/provider_factory.go
++++ b/internal/runtime/provider_factory.go
+@@ -4,6 +4,7 @@ import (
+ 	"claw-code-go/internal/api"
+ 	anthropicprovider "claw-code-go/internal/api/providers/anthropic"
+ 	bedrockprovider "claw-code-go/internal/api/providers/bedrock"
++	deepseekprovider "claw-code-go/internal/api/providers/deepseek"
+ 	foundryprovider "claw-code-go/internal/api/providers/foundry"
+ 	openaiprovider "claw-code-go/internal/api/providers/openai"
+ 	vertexprovider "claw-code-go/internal/api/providers/vertex"
+@@ -12,7 +13,7 @@ import (
+ )
+ 
+ // SelectProvider returns the Provider for the given name.
+-// Supported names: "anthropic" (default), "openai", "bedrock", "vertex", "foundry".
++// Supported names: "anthropic" (default), "openai", "bedrock", "vertex", "foundry", "deepseek".
+ func SelectProvider(name string) api.Provider {
+ 	switch name {
+ 	case "openai":
+@@ -23,6 +24,8 @@ func SelectProvider(name string) api.Provider {
+ 		return vertexprovider.New()
+ 	case "foundry":
+ 		return foundryprovider.New()
++	case "deepseek":
++		return deepseekprovider.New()
+ 	default:
+ 		return anthropicprovider.New()
+ 	}
